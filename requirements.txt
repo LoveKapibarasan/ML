@@ -1,0 +1,12 @@
+entsoe-py
+dotenv
+openmeteo-requests
+requests-cache
+retry-requests
+pandas
+numpy
+holidays
+stable-baselines3[extra]
+shimmy
+ruff
+gymnasium
