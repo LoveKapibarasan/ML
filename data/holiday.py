@@ -1,42 +1,64 @@
+"""
+Generate hourly holiday flags from the official German public holiday calendar.
+
+Usage (CLI)
+-----------
+  python holiday.py --year 2026
+  python holiday.py --year 2025 --country DE --subdiv BE
+"""
+
+import argparse
 from pathlib import Path
 
-import holidays
+import holidays as hol_lib
 import pandas as pd
 
+OUTPUT_DIR = Path(__file__).resolve().parent.parent / "inputs"
 
-def generate_holiday_file(year=2025, country='DE', prov='BE'):
+
+def fetch_holidays(
+    year: int = 2026,
+    country: str = "DE",
+    subdiv: str = "BE",
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> pd.DataFrame:
     """
-    Generate a CSV file containing holiday flags for each date.
+    Build an hourly DataFrame of holiday flags.
+
+    Parameters
+    ----------
+    year     : calendar year
+    country  : ISO 3166-1 alpha-2 country code
+    subdiv   : subdivision / state code (e.g. "BE" for Berlin)
+    start_date, end_date : optional override for the date range (YYYY-MM-DD)
+
+    Returns
+    -------
+    DataFrame with columns: date (UTC), is_holiday
     """
-    # Define timeline (Hourly to match other weather/market data)
-    start_date = f"{year}-01-01"
-    end_date = f"{year}-12-31 23:00:00"
-    dates = pd.date_range(start=start_date, end=end_date, freq='h')
+    start = pd.Timestamp(start_date or f"{year}-01-01", tz="UTC")
+    end   = pd.Timestamp(end_date   or f"{year}-12-31 23:00", tz="UTC")
+    dates = pd.date_range(start=start, end=end, freq="h")
 
-    # Get holiday definitions
-    de_holidays = holidays.CountryHoliday(country, prov=prov)
+    cal = hol_lib.country_holidays(country, subdiv=subdiv, years=year)
+    flags = [1 if d.date() in cal else 0 for d in dates]
 
-    # Create list of flags
-    # 1 if holiday, 0 if not
-    holiday_flags = [1 if date in de_holidays else 0 for date in dates]
+    return pd.DataFrame({"date": dates, "is_holiday": flags})
 
-    # Build DataFrame
-    df_holiday = pd.DataFrame({
-        'date': dates,
-        'is_holiday': holiday_flags
-    })
-
-    # File path setup (Same robust path logic)
-    current_dir = Path(__file__).parent
-    output_dir = current_dir.parent / "inputs"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    file_path = output_dir / f"holidays_{year}.csv"
-    
-    # Save
-    df_holiday.to_csv(file_path, index=False)
-    print(f"Holiday file created: {file_path}")
-    print(df_holiday[df_holiday['is_holiday'] == 1].head()) # Check some holidays
 
 if __name__ == "__main__":
-    generate_holiday_file()
+    parser = argparse.ArgumentParser(description="Generate hourly holiday flags")
+    parser.add_argument("--year",    type=int, default=2026, help="Calendar year")
+    parser.add_argument("--country", default="DE",           help="Country code (default: DE)")
+    parser.add_argument("--subdiv",  default="BE",           help="State/subdivision (default: BE = Berlin)")
+    parser.add_argument("--start",   default=None,           help="Override start date YYYY-MM-DD")
+    parser.add_argument("--end",     default=None,           help="Override end date   YYYY-MM-DD")
+    args = parser.parse_args()
+
+    df = fetch_holidays(args.year, args.country, args.subdiv, args.start, args.end)
+
+    out_path = OUTPUT_DIR / f"holidays_{args.year}.csv"
+    df.to_csv(out_path, index=False)
+    print(f"Saved {len(df)} rows → {out_path}")
+    print(df[df["is_holiday"] == 1].head())
