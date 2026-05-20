@@ -1,11 +1,14 @@
 import os
+from pathlib import Path
 
 import pandas as pd
 from dotenv import load_dotenv
 from entsoe import EntsoePandasClient
 
-# Load environment variables
 load_dotenv()
+
+OUTPUT_DIR = Path(__file__).resolve().parent.parent / "inputs"
+
 
 def fetch_market_prices(country_code='DE_LU', start_date='20250101', end_date='20251231'):
     """
@@ -37,20 +40,24 @@ def fetch_market_prices(country_code='DE_LU', start_date='20250101', end_date='2
         print(f"Error fetching data: {e}")
         return None
 
-def save_to_csv(df, filename='../inputs/spot_2025_new.csv'):
-    """
-    Save the DataFrame in a specific European CSV format (semicolon and comma decimal).
-    """
-    if df is not None:
-        os.makedirs(os.path.dirname(filename), exist_ok=True)
-        df.to_csv(filename, sep=';', decimal=',', index=False)
-        print(f"Data saved to {filename}")
+def save_to_csv(df, filename: str | None = None):
+    if df is None:
+        return
+    if filename is None:
+        filename = str(OUTPUT_DIR / "spot_2025_new.csv")
+    path = Path(filename)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(path, sep=';', decimal=',', index=False)
+    print(f"Data saved to {path}")
 
 if __name__ == "__main__":
-    # Example: Fetching 2025 data
-    price_df = fetch_market_prices(
-        country_code='DE_LU', 
-        start_date='20250101', 
-        end_date='20251231'
-    )
-    save_to_csv(price_df)
+    import argparse
+    parser = argparse.ArgumentParser(description="Fetch day-ahead prices from ENTSO-E")
+    parser.add_argument("--start",   default="20250101", help="Start date YYYYMMDD")
+    parser.add_argument("--end",     default="20251231", help="End date YYYYMMDD")
+    parser.add_argument("--country", default="DE_LU",    help="ENTSO-E bidding zone")
+    args = parser.parse_args()
+
+    price_df = fetch_market_prices(args.country, args.start, args.end)
+    year = args.start[:4]
+    save_to_csv(price_df, filename=str(OUTPUT_DIR / f"spot_{year}_new.csv"))

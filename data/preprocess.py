@@ -26,9 +26,49 @@ def _clean_date(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _detect_year(df_ev: pd.DataFrame) -> int:
-    """Derive the data year from the EV state timestamps."""
-    return pd.to_datetime(df_ev["date"]).dt.year.mode().iloc[0]
+def _detect_years(df_ev: pd.DataFrame) -> list[int]:
+    """Return sorted list of all calendar years present in the EV data."""
+    return sorted(pd.to_datetime(df_ev["date"]).dt.year.unique().tolist())
+
+
+def _load_prices(path: Path, years: list[int]) -> pd.DataFrame:
+    """Load and concatenate spot price CSV files for each year in `years`."""
+    dfs = []
+    for y in years:
+        f = path / f"spot_{y}_new.csv"
+        if f.exists():
+            df = pd.read_csv(f, sep=";", decimal=",")
+            df.columns = ["date", "price"]
+            df["price"] /= 1000.0  # €/MWh → €/kWh
+            dfs.append(df)
+    if not dfs:
+        candidates = sorted(path.glob("spot_*_new.csv"), reverse=True)
+        if not candidates:
+            raise FileNotFoundError(f"No spot price file found in {path}")
+        print(f"  Warning: using fallback price file {candidates[0].name}")
+        df = pd.read_csv(candidates[0], sep=";", decimal=",")
+        df.columns = ["date", "price"]
+        df["price"] /= 1000.0
+        dfs.append(df)
+    df_all = pd.concat(dfs, ignore_index=True).drop_duplicates(subset=["date"])
+    df_all["price_3h_future"] = df_all["price"].shift(-3).ffill()
+    return df_all
+
+
+def _load_holidays(path: Path, years: list[int]) -> pd.DataFrame:
+    """Load and concatenate holiday CSV files for each year in `years`."""
+    dfs = []
+    for y in years:
+        f = path / f"holidays_{y}.csv"
+        if f.exists():
+            dfs.append(pd.read_csv(f))
+    if not dfs:
+        candidates = sorted(path.glob("holidays_*.csv"), reverse=True)
+        if not candidates:
+            raise FileNotFoundError(f"No holiday file found in {path}")
+        print(f"  Warning: using fallback holiday file {candidates[0].name}")
+        dfs.append(pd.read_csv(candidates[0]))
+    return pd.concat(dfs, ignore_index=True).drop_duplicates(subset=["date"])
 
 
 def preprocess(ev_id: int = 0) -> None:
@@ -39,25 +79,14 @@ def preprocess(ev_id: int = 0) -> None:
 
     # ── EV state (from citrine DB via ev_from_db.py) ─────────────────────────
     df_ev = pd.read_csv(path / f"{ev_id}_lmd.csv")
-    year  = _detect_year(df_ev)
+    years = _detect_years(df_ev)
+    year  = years[0]   # primary year (used for weather file naming)
+    print(f"  EV data spans years: {years}")
 
-    # ── Other data sources (API-fetched) ──────────────────────────────────────
-    # Electricity spot prices — semicolon CSV, €/MWh → €/kWh
-    price_file = path / f"spot_{year}_new.csv"
-    if not price_file.exists():
-        # Fallback: try the most recent available price file
-        candidates = sorted(path.glob("spot_*_new.csv"), reverse=True)
-        if not candidates:
-            raise FileNotFoundError(f"No spot price file found in {path}")
-        price_file = candidates[0]
-        print(f"  Warning: using fallback price file {price_file.name}")
+    # ── Spot prices (concatenate all years present in EV data) ────────────────
+    df_price = _load_prices(path, years)
 
-    df_price = pd.read_csv(price_file, sep=";", decimal=",")
-    df_price.columns = ["date", "price"]
-    df_price["price"] /= 1000.0
-    df_price["price_3h_future"] = df_price["price"].shift(-3).ffill()
-
-    # Weather + sunshine
+    # ── Weather + sunshine (single file covers full date range) ───────────────
     weather_file = path / f"weather_{year}.csv"
     if not weather_file.exists():
         candidates = sorted(path.glob("weather_*.csv"), reverse=True)
@@ -67,29 +96,14 @@ def preprocess(ev_id: int = 0) -> None:
         print(f"  Warning: using fallback weather file {weather_file.name}")
     df_weather = pd.read_csv(weather_file)
 
-    # Holidays
-    holiday_file = path / f"holidays_{year}.csv"
-    if not holiday_file.exists():
-        candidates = sorted(path.glob("holidays_*.csv"), reverse=True)
-        if not candidates:
-            raise FileNotFoundError(f"No holiday file found in {path}")
-        holiday_file = candidates[0]
-        print(f"  Warning: using fallback holiday file {holiday_file.name}")
-    df_holiday = pd.read_csv(holiday_file)
+    # ── Holidays (concatenate all years present in EV data) ───────────────────
+    df_holiday = _load_holidays(path, years)
 
     # ── Normalise timestamps ──────────────────────────────────────────────────
     df_ev      = _clean_date(df_ev)
     df_price   = _clean_date(df_price)
     df_weather = _clean_date(df_weather)
     df_holiday = _clean_date(df_holiday)
-
-    # If price year differs from EV year, shift price dates to match.
-    # (Hourly patterns are representative even across years.)
-    price_year = pd.to_datetime(df_price["date"]).dt.year.mode().iloc[0]
-    if price_year != year:
-        offset = pd.DateOffset(years=(year - price_year))
-        df_price["date"] = pd.to_datetime(df_price["date"]) + offset
-        print(f"  Info: price dates shifted from {price_year} → {year}")
 
     # ── Merge on hourly date ──────────────────────────────────────────────────
     df_final = (

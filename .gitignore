@@ -1,3 +1,23 @@
+# ── Project-specific ──────────────────────────────────────────────────────────
+
+# Generated input data (re-created by data/ scripts)
+inputs/
+
+# Trained model checkpoints (large binaries)
+models/
+
+# Reinforcement-learning training logs (TensorBoard)
+*_ev_logs/
+
+# Backtest outputs
+test_results.*
+
+# HTTP request cache (requests-cache / Open-Meteo)
+.cache.sqlite
+data/.cache.sqlite
+
+# ── Python ────────────────────────────────────────────────────────────────────
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

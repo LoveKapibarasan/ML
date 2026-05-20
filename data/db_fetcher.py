@@ -20,13 +20,16 @@ from pathlib import Path
 import pandas as pd
 import psycopg2
 import psycopg2.extras
+from dotenv import load_dotenv
+
+load_dotenv()
 
 DB_CONFIG = {
-    "host": os.getenv("DB_HOST", "172.25.30.7"),
-    "port": int(os.getenv("DB_PORT", 5432)),
-    "dbname": "citrine",
-    "user": "citrine",
-    "password": os.getenv("DB_PASSWORD", "048910ee1e61799b85241a6e70c3f0d57c91302f7221481290d3b023a222e743"),
+    "host":     os.getenv("DB_HOST",     "172.25.30.7"),
+    "port":     int(os.getenv("DB_PORT", 5432)),
+    "dbname":   os.getenv("DB_NAME",     "citrine"),
+    "user":     os.getenv("DB_USER",     "citrine"),
+    "password": os.getenv("DB_PASSWORD"),
 }
 
 OUTPUT_DIR = Path(__file__).resolve().parent.parent / "inputs"
