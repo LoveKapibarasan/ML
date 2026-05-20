@@ -38,7 +38,7 @@ def fetch_holidays(
     DataFrame with columns: date (UTC), is_holiday
     """
     start = pd.Timestamp(start_date or f"{year}-01-01", tz="UTC")
-    end   = pd.Timestamp(end_date   or f"{year}-12-31 23:00", tz="UTC")
+    end = pd.Timestamp(end_date or f"{year}-12-31 23:00", tz="UTC")
     dates = pd.date_range(start=start, end=end, freq="h")
 
     cal = hol_lib.country_holidays(country, subdiv=subdiv, years=year)
@@ -49,11 +49,13 @@ def fetch_holidays(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate hourly holiday flags")
-    parser.add_argument("--year",    type=int, default=2026, help="Calendar year")
-    parser.add_argument("--country", default="DE",           help="Country code (default: DE)")
-    parser.add_argument("--subdiv",  default="BE",           help="State/subdivision (default: BE = Berlin)")
-    parser.add_argument("--start",   default=None,           help="Override start date YYYY-MM-DD")
-    parser.add_argument("--end",     default=None,           help="Override end date   YYYY-MM-DD")
+    parser.add_argument("--year", type=int, default=2026, help="Calendar year")
+    parser.add_argument("--country", default="DE", help="Country code (default: DE)")
+    parser.add_argument(
+        "--subdiv", default="BE", help="State/subdivision (default: BE = Berlin)"
+    )
+    parser.add_argument("--start", default=None, help="Override start date YYYY-MM-DD")
+    parser.add_argument("--end", default=None, help="Override end date   YYYY-MM-DD")
     args = parser.parse_args()
 
     df = fetch_holidays(args.year, args.country, args.subdiv, args.start, args.end)

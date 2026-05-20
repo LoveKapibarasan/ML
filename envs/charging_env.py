@@ -1,8 +1,9 @@
+from pathlib import Path
+
 import gymnasium as gym
 import numpy as np
 import pandas as pd
 from gymnasium import spaces
-from pathlib import Path
 
 
 class EVChargingEnv(gym.Env):
@@ -45,9 +46,7 @@ class EVChargingEnv(gym.Env):
         self.battery_capacity = 50.0  # kWh
 
         # Continuous charging rate: 0.0 (off) → 1.0 (full power)
-        self.action_space = spaces.Box(
-            low=0.0, high=1.0, shape=(1,), dtype=np.float32
-        )
+        self.action_space = spaces.Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32)
         # Unbounded — normalised values can fall outside [0, 1] for price signals
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(11,), dtype=np.float32
@@ -69,26 +68,26 @@ class EVChargingEnv(gym.Env):
     # ── observation ───────────────────────────────────────────────────────────
 
     def _get_obs(self) -> np.ndarray:
-        row    = self.full_data.iloc[self.current_step]
+        row = self.full_data.iloc[self.current_step]
         demand = self.demand_data.iloc[self.current_demand_idx]
 
-        time_left = (
-            demand["departure_time"] - row["date"]
-        ).total_seconds() / 3600.0
+        time_left = (demand["departure_time"] - row["date"]).total_seconds() / 3600.0
 
         return np.array(
             [
-                row["price"],                                      # 0  €/kWh
-                (row["temp_c"] + 20.0) / 60.0,                    # 1  temperature
-                min(row["radiation_wm2"] / 1000.0, 1.0),          # 2  irradiance
-                row["sunshine_duration_s"] / 3600.0,              # 3  sunshine
-                float(row["is_holiday_x"]),                        # 4  holiday
-                float(str(row["pluggedin"]).lower() not in ("false", "0", "")),  # 5  plugged in
-                float(self.soc),                                   # 6  SoC
-                float(np.clip(time_left / 24.0, 0.0, 1.0)),       # 7  time left
-                float(demand["target_soc"]),                       # 8  target SoC
-                min(row["powerrating"] / 22.0, 1.0),               # 9  power rating
-                row["price_3h_future"],                            # 10 future price
+                row["price"],  # 0  €/kWh
+                (row["temp_c"] + 20.0) / 60.0,  # 1  temperature
+                min(row["radiation_wm2"] / 1000.0, 1.0),  # 2  irradiance
+                row["sunshine_duration_s"] / 3600.0,  # 3  sunshine
+                float(row["is_holiday_x"]),  # 4  holiday
+                float(
+                    str(row["pluggedin"]).lower() not in ("false", "0", "")
+                ),  # 5  plugged in
+                float(self.soc),  # 6  SoC
+                float(np.clip(time_left / 24.0, 0.0, 1.0)),  # 7  time left
+                float(demand["target_soc"]),  # 8  target SoC
+                min(row["powerrating"] / 22.0, 1.0),  # 9  power rating
+                row["price_3h_future"],  # 10 future price
             ],
             dtype=np.float32,
         )
@@ -106,8 +105,8 @@ class EVChargingEnv(gym.Env):
 
         pluggedin = str(row["pluggedin"]).lower() not in ("false", "0", "")
         if rate > self._CHARGE_THRESHOLD and pluggedin:
-            actual_power = rate * row["powerrating"]   # kW
-            cost = actual_power * row["price"]         # €  (negative price = free energy)
+            actual_power = rate * row["powerrating"]  # kW
+            cost = actual_power * row["price"]  # €  (negative price = free energy)
             reward -= cost
 
         if is_departure:
@@ -122,8 +121,10 @@ class EVChargingEnv(gym.Env):
     # ── step / reset ──────────────────────────────────────────────────────────
 
     def step(self, action):
-        rate   = float(np.clip(np.asarray(action).flat[0], 0.0, 1.0))  # scalar charging rate
-        row    = self.full_data.iloc[self.current_step]
+        rate = float(
+            np.clip(np.asarray(action).flat[0], 0.0, 1.0)
+        )  # scalar charging rate
+        row = self.full_data.iloc[self.current_step]
         demand = self.demand_data.iloc[self.current_demand_idx]
 
         is_departure = row["date"] >= demand["departure_time"]
@@ -149,7 +150,7 @@ class EVChargingEnv(gym.Env):
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
-        self.current_step       = 0
+        self.current_step = 0
         self.current_demand_idx = 0
         self.soc = float(self.demand_data.iloc[0]["initial_soc"])
         return self._get_obs(), {}

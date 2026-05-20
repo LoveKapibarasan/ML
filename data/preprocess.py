@@ -80,7 +80,7 @@ def preprocess(ev_id: int = 0) -> None:
     # ── EV state (from citrine DB via ev_from_db.py) ─────────────────────────
     df_ev = pd.read_csv(path / f"{ev_id}_lmd.csv")
     years = _detect_years(df_ev)
-    year  = years[0]   # primary year (used for weather file naming)
+    year = years[0]  # primary year (used for weather file naming)
     print(f"  EV data spans years: {years}")
 
     # ── Spot prices (concatenate all years present in EV data) ────────────────
@@ -100,15 +100,14 @@ def preprocess(ev_id: int = 0) -> None:
     df_holiday = _load_holidays(path, years)
 
     # ── Normalise timestamps ──────────────────────────────────────────────────
-    df_ev      = _clean_date(df_ev)
-    df_price   = _clean_date(df_price)
+    df_ev = _clean_date(df_ev)
+    df_price = _clean_date(df_price)
     df_weather = _clean_date(df_weather)
     df_holiday = _clean_date(df_holiday)
 
     # ── Merge on hourly date ──────────────────────────────────────────────────
     df_final = (
-        df_ev
-        .merge(df_price,   on="date")
+        df_ev.merge(df_price, on="date")
         .merge(df_weather, on="date")
         .merge(df_holiday, on="date")
     )
@@ -117,7 +116,9 @@ def preprocess(ev_id: int = 0) -> None:
         print("  Warning: merged DataFrame is empty — date ranges may not overlap.")
         print(f"    EV range   : {df_ev['date'].min()} → {df_ev['date'].max()}")
         print(f"    Price range: {df_price['date'].min()} → {df_price['date'].max()}")
-        print(f"    Weather rng: {df_weather['date'].min()} → {df_weather['date'].max()}")
+        print(
+            f"    Weather rng: {df_weather['date'].min()} → {df_weather['date'].max()}"
+        )
 
     out_data = path / f"processed_data_{ev_id}.csv"
     df_final.to_csv(out_data, index=False)

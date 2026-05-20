@@ -4,7 +4,11 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B"]
-ignore = []
+ignore = [
+    "E501",  # Line too long
+    "B905",  # zip() without strict=（strict引数なしのzipを無視）
+    "E402",
+]
 
 [tool.ruff.format]
 quote-style = "double"

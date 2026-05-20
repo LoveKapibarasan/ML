@@ -2,21 +2,22 @@
 Backtest the trained SAC agent and plot price vs SoC over the first 48 hours.
 """
 
+from pathlib import Path
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from pathlib import Path
 from stable_baselines3 import SAC
 
 from envs.charging_env import EVChargingEnv
 
 # ── load model and environment ────────────────────────────────────────────────
 
-MODEL_PATH = "models/best_model"          # saved by EvalCallback
+MODEL_PATH = "models/best_model"  # saved by EvalCallback
 if not Path(f"{MODEL_PATH}.zip").exists():
     MODEL_PATH = "models/sac_smart_charger_final"
 
-env   = EVChargingEnv(ev_id=0, input_dir="./inputs")
+env = EVChargingEnv(ev_id=0, input_dir="./inputs")
 model = SAC.load(MODEL_PATH)
 
 print(f"Running backtest with {MODEL_PATH} ...")
@@ -24,7 +25,7 @@ print(f"Running backtest with {MODEL_PATH} ...")
 # ── run episode ───────────────────────────────────────────────────────────────
 
 obs, _ = env.reset()
-done   = False
+done = False
 history = []
 
 while not done:
@@ -34,12 +35,12 @@ while not done:
     row = env.full_data.iloc[env.current_step - 1]
     history.append(
         {
-            "date":       row["date"],
-            "price":      row["price"],
-            "soc":        env.soc,
+            "date": row["date"],
+            "price": row["price"],
+            "soc": env.soc,
             "charge_rate": float(np.clip(action, 0.0, 1.0)),
-            "pluggedin":  row["pluggedin"],
-            "reward":     reward,
+            "pluggedin": row["pluggedin"],
+            "reward": reward,
         }
     )
 
@@ -70,7 +71,7 @@ for i in range(len(plot_df) - 1):
             plot_df["date"].iloc[i],
             plot_df["date"].iloc[i + 1],
             color="green",
-            alpha=0.15 + 0.35 * rate,   # darker = higher rate
+            alpha=0.15 + 0.35 * rate,  # darker = higher rate
         )
 
 # SoC
@@ -80,7 +81,9 @@ ax2.plot(plot_df["date"], plot_df["soc"], color="tab:red", linewidth=2, label="S
 ax2.set_ylim(0, 1.05)
 ax2.tick_params(axis="y", labelcolor="tab:red")
 
-plt.title("SAC Charging Strategy: Price vs Battery SoC  (green = charging, darker = higher rate)")
+plt.title(
+    "SAC Charging Strategy: Price vs Battery SoC  (green = charging, darker = higher rate)"
+)
 fig.tight_layout()
 plt.savefig("test_results.png", dpi=150)
 plt.show()

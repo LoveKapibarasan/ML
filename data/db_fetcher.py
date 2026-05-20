@@ -25,10 +25,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DB_CONFIG = {
-    "host":     os.getenv("DB_HOST",     "172.25.30.7"),
-    "port":     int(os.getenv("DB_PORT", 5432)),
-    "dbname":   os.getenv("DB_NAME",     "citrine"),
-    "user":     os.getenv("DB_USER",     "citrine"),
+    "host": os.getenv("DB_HOST", "172.25.30.7"),
+    "port": int(os.getenv("DB_PORT", 5432)),
+    "dbname": os.getenv("DB_NAME", "citrine"),
+    "user": os.getenv("DB_USER", "citrine"),
     "password": os.getenv("DB_PASSWORD"),
 }
 
@@ -46,12 +46,15 @@ def fetch_meter_values(conn) -> pd.DataFrame:
     Extract hourly energy consumption (kWh) from MeterValues.
     Uses the total-phase Energy.Active.Import.Register reading.
     """
-    df = _query(conn, """
+    df = _query(
+        conn,
+        """
         SELECT timestamp, "connectorId", "sampledValue"
         FROM "MeterValues"
         WHERE timestamp IS NOT NULL
         ORDER BY timestamp ASC
-    """)
+    """,
+    )
     if df.empty:
         return df
 
@@ -92,14 +95,17 @@ def fetch_meter_values(conn) -> pd.DataFrame:
 
 def fetch_transactions(conn) -> pd.DataFrame:
     """Extract EV charging sessions from Transactions."""
-    df = _query(conn, """
+    df = _query(
+        conn,
+        """
         SELECT
             id, "stationId", "transactionId", "chargingState",
             "totalKwh", "startTime", "endTime", "meterStart"
         FROM "Transactions"
         WHERE "startTime" IS NOT NULL OR "endTime" IS NOT NULL
         ORDER BY "endTime" DESC
-    """)
+    """,
+    )
     if df.empty:
         return df
 
@@ -110,7 +116,9 @@ def fetch_transactions(conn) -> pd.DataFrame:
 
 
 def main():
-    print(f"Connecting to {DB_CONFIG['host']}:{DB_CONFIG['port']} / {DB_CONFIG['dbname']}...")
+    print(
+        f"Connecting to {DB_CONFIG['host']}:{DB_CONFIG['port']} / {DB_CONFIG['dbname']}..."
+    )
     with psycopg2.connect(**DB_CONFIG) as conn:
         print("Fetching MeterValues...")
         df_mv = fetch_meter_values(conn)

@@ -16,7 +16,7 @@ from envs.charging_env import EVChargingEnv
 
 
 def train():
-    env      = Monitor(EVChargingEnv(ev_id=0, input_dir="./inputs"))
+    env = Monitor(EVChargingEnv(ev_id=0, input_dir="./inputs"))
     eval_env = Monitor(EVChargingEnv(ev_id=0, input_dir="./inputs"))
 
     model = SAC(
@@ -26,17 +26,17 @@ def train():
         device="cuda",
         # --- learning dynamics ---
         learning_rate=3e-4,
-        gamma=0.99,                  # discount factor
-        tau=0.005,                   # soft-update coefficient for target nets
+        gamma=0.99,  # discount factor
+        tau=0.005,  # soft-update coefficient for target nets
         # --- replay buffer ---
         buffer_size=200_000,
-        learning_starts=2_000,       # steps before first gradient update
+        learning_starts=2_000,  # steps before first gradient update
         batch_size=256,
         # --- update schedule ---
         train_freq=1,
         gradient_steps=1,
         # --- entropy ---
-        ent_coef="auto",             # automatic entropy-coefficient tuning
+        ent_coef="auto",  # automatic entropy-coefficient tuning
         target_entropy="auto",
         # --- network ---
         policy_kwargs=dict(net_arch=[256, 256]),

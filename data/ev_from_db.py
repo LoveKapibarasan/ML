@@ -24,10 +24,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DB_CONFIG = {
-    "host":     os.getenv("DB_HOST",     "172.25.30.7"),
-    "port":     int(os.getenv("DB_PORT", 5432)),
-    "dbname":   os.getenv("DB_NAME",     "citrine"),
-    "user":     os.getenv("DB_USER",     "citrine"),
+    "host": os.getenv("DB_HOST", "172.25.30.7"),
+    "port": int(os.getenv("DB_PORT", 5432)),
+    "dbname": os.getenv("DB_NAME", "citrine"),
+    "user": os.getenv("DB_USER", "citrine"),
     "password": os.getenv("DB_PASSWORD"),
 }
 
@@ -54,12 +54,15 @@ def build_ev_state(conn) -> pd.DataFrame:
     - powerrating: measured kW if available, else DEFAULT_POWER_RATING_KW when plugged in
     - is_holiday : German (Berlin) public holiday flag
     """
-    df = _query(conn, """
+    df = _query(
+        conn,
+        """
         SELECT timestamp, "transactionId", "sampledValue"
         FROM "MeterValues"
         WHERE timestamp IS NOT NULL
         ORDER BY timestamp ASC
-    """)
+    """,
+    )
     if df.empty:
         raise RuntimeError("No MeterValues data in DB.")
 
@@ -70,7 +73,10 @@ def build_ev_state(conn) -> pd.DataFrame:
         if not isinstance(sv, list):
             return None
         for item in sv:
-            if item.get("measurand") == "Power.Active.Import" and item.get("phase") is None:
+            if (
+                item.get("measurand") == "Power.Active.Import"
+                and item.get("phase") is None
+            ):
                 return float(item["value"])
         return None
 
@@ -78,7 +84,7 @@ def build_ev_state(conn) -> pd.DataFrame:
     df = df.set_index("timestamp")
 
     hourly_plugin = df["pluggedin"].resample("1h").max().rename("pluggedin")
-    hourly_power  = df["power_w"].resample("1h").mean()
+    hourly_power = df["power_w"].resample("1h").mean()
 
     hourly = pd.concat([hourly_plugin, hourly_power], axis=1)
     hourly["PluggedIn"] = hourly["pluggedin"].fillna(False)
@@ -90,8 +96,10 @@ def build_ev_state(conn) -> pd.DataFrame:
         ),
         axis=1,
     )
-    hourly = hourly[["PluggedIn", "PowerRating"]].reset_index().rename(
-        columns={"timestamp": "date"}
+    hourly = (
+        hourly[["PluggedIn", "PowerRating"]]
+        .reset_index()
+        .rename(columns={"timestamp": "date"})
     )
 
     # Holiday flag (Berlin, Germany)
@@ -113,7 +121,9 @@ def build_demand(conn) -> pd.DataFrame:
     - target_soc    : capped ratio of totalKwh to battery capacity (min 0.5)
     - initial_soc   : random 0.1–0.3 (SoC at arrival not reported by OCPP station)
     """
-    df = _query(conn, """
+    df = _query(
+        conn,
+        """
         SELECT
             t.id,
             t."totalKwh",
@@ -126,15 +136,18 @@ def build_demand(conn) -> pd.DataFrame:
           AND t."totalKwh" > 0
         GROUP BY t.id
         ORDER BY t."endTime" ASC
-    """)
+    """,
+    )
     if df.empty:
         raise RuntimeError("No usable Transactions in DB.")
 
-    df["arrival_time"]   = pd.to_datetime(df["arrival_time"], utc=True)
-    df["departure_time"] = pd.to_datetime(df["endTime"],      utc=True)
+    df["arrival_time"] = pd.to_datetime(df["arrival_time"], utc=True)
+    df["departure_time"] = pd.to_datetime(df["endTime"], utc=True)
 
     # target_soc: at least 0.5 even for short test sessions
-    df["target_soc"]  = (df["totalKwh"].astype(float) / BATTERY_CAPACITY_KWH).clip(0.5, 1.0)
+    df["target_soc"] = (df["totalKwh"].astype(float) / BATTERY_CAPACITY_KWH).clip(
+        0.5, 1.0
+    )
     rng = np.random.default_rng(42)
     df["initial_soc"] = rng.uniform(0.1, 0.3, size=len(df))
 
@@ -142,7 +155,9 @@ def build_demand(conn) -> pd.DataFrame:
 
 
 def main():
-    print(f"Connecting to {DB_CONFIG['host']}:{DB_CONFIG['port']} / {DB_CONFIG['dbname']} ...")
+    print(
+        f"Connecting to {DB_CONFIG['host']}:{DB_CONFIG['port']} / {DB_CONFIG['dbname']} ..."
+    )
     conn = _get_conn()
 
     print("Building EV state time-series ...")
@@ -160,8 +175,8 @@ def main():
     conn.close()
 
     start = df_lmd["date"].min().strftime("%Y-%m-%d")
-    end   = df_lmd["date"].max().strftime("%Y-%m-%d")
-    year  = df_lmd["date"].dt.year.iloc[0]
+    end = df_lmd["date"].max().strftime("%Y-%m-%d")
+    year = df_lmd["date"].dt.year.iloc[0]
     print(f"\nDB date range: {start} → {end}  (year={year})")
     print("Next steps:")
     print(f"  python weather.py --start {start} --end {end}")

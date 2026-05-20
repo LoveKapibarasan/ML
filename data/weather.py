@@ -26,10 +26,10 @@ OUTPUT_DIR = Path(__file__).resolve().parent.parent / "inputs"
 
 _ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
 _HOURLY_VARS = [
-    "temperature_2m",       # [°C]
+    "temperature_2m",  # [°C]
     "shortwave_radiation",  # GHI [W/m²]
-    "relative_humidity_2m", # [%]
-    "sunshine_duration",    # direct sunshine per hour [s], max 3600
+    "relative_humidity_2m",  # [%]
+    "sunshine_duration",  # direct sunshine per hour [s], max 3600
 ]
 
 
@@ -72,28 +72,36 @@ def fetch_weather(
     hourly = response.Hourly()
 
     dates = pd.date_range(
-        start=pd.to_datetime(hourly.Time(),    unit="s", utc=True),
-        end=pd.to_datetime(hourly.TimeEnd(),   unit="s", utc=True),
+        start=pd.to_datetime(hourly.Time(), unit="s", utc=True),
+        end=pd.to_datetime(hourly.TimeEnd(), unit="s", utc=True),
         freq=pd.Timedelta(seconds=hourly.Interval()),
         inclusive="left",
     )
 
-    return pd.DataFrame({
-        "date":               dates,
-        "temp_c":             hourly.Variables(0).ValuesAsNumpy(),
-        "radiation_wm2":      hourly.Variables(1).ValuesAsNumpy(),
-        "humidity_pct":       hourly.Variables(2).ValuesAsNumpy(),
-        "sunshine_duration_s": hourly.Variables(3).ValuesAsNumpy(),
-    })
+    return pd.DataFrame(
+        {
+            "date": dates,
+            "temp_c": hourly.Variables(0).ValuesAsNumpy(),
+            "radiation_wm2": hourly.Variables(1).ValuesAsNumpy(),
+            "humidity_pct": hourly.Variables(2).ValuesAsNumpy(),
+            "sunshine_duration_s": hourly.Variables(3).ValuesAsNumpy(),
+        }
+    )
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Fetch weather + sunshine from Open-Meteo")
-    parser.add_argument("--lat",   type=float, default=52.52,       help="Latitude  (default: Berlin)")
-    parser.add_argument("--lon",   type=float, default=13.41,       help="Longitude (default: Berlin)")
-    parser.add_argument("--start", default="2026-01-01",            help="Start date YYYY-MM-DD")
-    parser.add_argument("--end",   default="2026-12-31",            help="End date   YYYY-MM-DD")
-    parser.add_argument("--out",   default=None,                    help="Output CSV path (auto if omitted)")
+    parser = argparse.ArgumentParser(
+        description="Fetch weather + sunshine from Open-Meteo"
+    )
+    parser.add_argument(
+        "--lat", type=float, default=52.52, help="Latitude  (default: Berlin)"
+    )
+    parser.add_argument(
+        "--lon", type=float, default=13.41, help="Longitude (default: Berlin)"
+    )
+    parser.add_argument("--start", default="2026-01-01", help="Start date YYYY-MM-DD")
+    parser.add_argument("--end", default="2026-12-31", help="End date   YYYY-MM-DD")
+    parser.add_argument("--out", default=None, help="Output CSV path (auto if omitted)")
     args = parser.parse_args()
 
     df = fetch_weather(args.lat, args.lon, args.start, args.end)
