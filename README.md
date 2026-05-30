@@ -196,7 +196,8 @@ ML/
 ├── benchmark.py             # Full benchmark: SAC vs 3 baseline strategies
 ├── serve.py                 # FastAPI inference server (SMARTCHARGING_ENDPOINT)
 ├── run_pipeline.sh          # One-shot: fetch data → preprocess → train
-├── serve.sh                 # Start inference server
+├── serve.sh                 # Service manager (start/stop/restart/status/logs)
+├── install_service.sh       # Register serve.py as a systemd service
 ├── .env                     # Secrets — git-ignored
 └── .env.example             # Template — commit this, not .env
 ```
@@ -304,10 +305,27 @@ python benchmark.py
 
 #### 6. Start inference server
 
+**Option A – foreground / manual**
+
 ```bash
-./serve.sh
-# Server: http://0.0.0.0:8000
-# Swagger UI: http://localhost:8000/docs
+./serve.sh start    # start in background (PID saved to .serve.pid)
+./serve.sh stop     # graceful stop
+./serve.sh restart  # stop + start
+./serve.sh status   # show PID and URL
+./serve.sh logs     # tail -f serve.log
+```
+
+**Option B – systemd service (auto-start on boot)**
+
+```bash
+sudo ./install_service.sh
+# Generates /etc/systemd/system/sac-charging.service from the current directory,
+# enables it, and starts it immediately.
+
+systemctl status  sac-charging
+systemctl stop    sac-charging
+systemctl restart sac-charging
+journalctl -u     sac-charging -f   # live logs
 ```
 
 Then set `SMARTCHARGING_ENDPOINT=http://<this-host>:8000/schedule` in

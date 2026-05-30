@@ -449,7 +449,7 @@ def main():
     print("\n─── Benchmark Summary ─────────────────────────────────────────")
     print(f"{'Strategy':<25} {'Cost (€)':>10} {'Savings (€)':>12} {'SoC met':>9}")
     print("─" * 62)
-    for name, row in summary.iterrows():
+    for _name, row in summary.iterrows():
         savings = baseline_cost - row["total_cost_eur"]
         print(
             f"{row['label']:<25} {row['total_cost_eur']:>10.2f}"

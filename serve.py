@@ -318,6 +318,7 @@ def _guarantee_soc(
     prices: pd.DataFrame,
     now: datetime,
     max_power_kw: float,
+    battery_capacity_kwh: float = BATTERY_CAPACITY_KWH,
 ) -> list[dict]:
     """
     Guarantee the target SoC is reached by the departure hour.
@@ -341,9 +342,9 @@ def _guarantee_soc(
     soc = initial_soc
     for h in range(n):
         rate = (periods[h]["limit"] / max_w) if max_w > 0 else 0.0
-        soc = min(1.0, soc + rate * max_power_kw / BATTERY_CAPACITY_KWH)
+        soc = min(1.0, soc + rate * max_power_kw / battery_capacity_kwh)
 
-    shortfall_kwh = max(0.0, (target_soc - soc) * BATTERY_CAPACITY_KWH)
+    shortfall_kwh = max(0.0, (target_soc - soc) * battery_capacity_kwh)
     if shortfall_kwh < 0.05:  # within 50 Wh → already satisfied
         return periods
 
@@ -359,7 +360,7 @@ def _guarantee_soc(
 
     # ── 3. Fill cheapest slots until shortfall is covered ─────────────────────
     periods = [p.copy() for p in periods]
-    for price, h, cur_w in slots:
+    for _price, h, cur_w in slots:
         if shortfall_kwh < 0.05:
             break
         headroom_kwh = (max_w - cur_w) / 1000.0
@@ -380,6 +381,7 @@ def get_schedule(
     desired_soc: float = Query(default=0.8, ge=0.0, le=1.0),
     departure_time: str | None = Query(default=None),
     current_soc: float = Query(default=0.2, ge=0.0, le=1.0),
+    battery_capacity_kwh: float = Query(default=BATTERY_CAPACITY_KWH, gt=0.0),
     user_id: str | None = Query(default=None),
 ):
     now = datetime.now(timezone.utc).replace(
@@ -401,7 +403,7 @@ def get_schedule(
     try:
         prices = _load_prices()
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     try:
         weather = _fetch_weather()
@@ -457,7 +459,7 @@ def get_schedule(
         periods.append({"startPeriod": h * 3600, "limit": limit_w})
 
         if rate > 0:
-            soc = min(1.0, soc + rate * max_power_kw / BATTERY_CAPACITY_KWH)
+            soc = min(1.0, soc + rate * max_power_kw / battery_capacity_kwh)
 
     # ── SoC guarantee: fill cheapest hours if target will not be met ──────────
     periods = _guarantee_soc(
@@ -468,6 +470,7 @@ def get_schedule(
         prices,
         now,
         max_power_kw,
+        battery_capacity_kwh,
     )
 
     profile_id = abs(hash(f"{station_id}:{evse_id}:{now.date()}")) % 2_000_000 + 1
