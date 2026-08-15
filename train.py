@@ -1,11 +1,11 @@
-"""
-Train an EV smart-charging agent with SAC (Soft Actor-Critic).
+"""Train an EV smart-charging agent with SAC (Soft Actor-Critic).
 
 SAC is an off-policy, maximum-entropy algorithm well-suited for continuous
-control.  Compared with PPO it offers:
-  • Higher sample efficiency via experience replay
-  • Automatic entropy tuning (prevents premature convergence)
-  • Naturally handles continuous charging-rate actions
+control. Compared with PPO it offers:
+
+- Higher sample efficiency via experience replay
+- Automatic entropy tuning (prevents premature convergence)
+- Naturally handles continuous charging-rate actions
 """
 
 from stable_baselines3 import SAC
@@ -16,6 +16,19 @@ from envs.charging_env import EVChargingEnv
 
 
 def train():
+    """Trains a SAC agent on :class:`envs.charging_env.EVChargingEnv`.
+
+    Builds a train/eval pair of environments over ``ev_id=0`` data under
+    ``./inputs``, trains for 500,000 timesteps with periodic evaluation,
+    and writes the best checkpoint to ``models/best_model`` (via
+    ``EvalCallback``) and the final model to
+    ``models/sac_smart_charger_final.zip``.
+
+    Side Effects:
+        Writes TensorBoard logs under ``./sac_ev_logs/`` and model
+        checkpoints under ``./models/``. Requires a CUDA device
+        (``device="cuda"``).
+    """
     env = Monitor(EVChargingEnv(ev_id=0, input_dir="./inputs"))
     eval_env = Monitor(EVChargingEnv(ev_id=0, input_dir="./inputs"))
 

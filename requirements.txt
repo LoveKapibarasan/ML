@@ -12,3 +12,7 @@ ruff
 gymnasium
 fastapi[standard]
 uvicorn[standard]
+psycopg2-binary
+pytest
+sphinx
+sphinx-rtd-theme

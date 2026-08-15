@@ -1,52 +1,56 @@
-"""
-SAC Smart Charging Inference Server
+"""SAC Smart Charging Inference Server.
 
-Implements the SMARTCHARGING_ENDPOINT contract expected by citrineos-payment.
-citrineos-payment polls this server every SMARTCHARGING_POLL_INTERVAL seconds
-and forwards the returned ChargingProfile to CitrineOS via SetChargingProfile
-(OCPP 2.0.1).
+Implements the ``SMARTCHARGING_ENDPOINT`` contract expected by
+citrineos-payment. citrineos-payment polls this server every
+``SMARTCHARGING_POLL_INTERVAL`` seconds and forwards the returned
+``ChargingProfile`` to CitrineOS via ``SetChargingProfile`` (OCPP 2.0.1).
 
-SoC guarantee
--------------
-After the SAC model generates the 24-hour schedule, the server simulates the
-resulting SoC trajectory.  If the target SoC will not be reached by departure,
-it force-fills the cheapest remaining hours (cheapest first, negative prices
-filled first) until the shortfall is covered.  The EVSE's actual max power is
-read from the citrine DB (Power.Active.Import measurand, cached 24 h); the
-MAX_POWER_KW env var is used as fallback.
+SoC guarantee:
+    After the SAC model generates the 24-hour schedule, the server
+    simulates the resulting SoC trajectory. If the target SoC will not
+    be reached by departure, it force-fills the cheapest remaining
+    hours (cheapest first, negative prices filled first) until the
+    shortfall is covered. The EVSE's actual max power is read from the
+    citrine DB (``Power.Active.Import`` measurand, cached 24 h); the
+    ``MAX_POWER_KW`` env var is used as fallback.
 
-API contract
-------------
-GET /schedule
-  Query params:
-    station_id    str   — OCPP station identifier
-    evse_id       int   — OCPP EVSE ID (integer)
-    desired_soc   float — target state-of-charge [0,1]   (default 0.8)
-    departure_time str  — ISO 8601 datetime               (default now+24 h)
-    current_soc   float — current battery SoC [0,1]       (default 0.2)
-    user_id       str   — Keycloak user ID                (optional)
+API contract:
+    ``GET /schedule``
 
-  Response:
-    {
-      "chargingProfile": {
-        "id": <int>,
-        "stackLevel": 0,
-        "chargingProfilePurpose": "TxDefaultProfile",
-        "chargingProfileKind": "Absolute",
-        "chargingSchedule": [{
-          "id": <int>,
-          "chargingRateUnit": "W",
-          "chargingSchedulePeriod": [
-            {"startPeriod": 0,    "limit": <watts>},
-            {"startPeriod": 3600, "limit": <watts>},
-            ...  (SCHEDULE_HOURS periods, one per hour)
-          ]
-        }]
-      }
-    }
+    Query params::
 
-GET /health
-  Response: {"status": "healthy", "model": "<path>", "max_power_kw": <float>}
+        station_id      str   — OCPP station identifier
+        evse_id         int   — OCPP EVSE ID (integer)
+        desired_soc     float — target state-of-charge [0,1]   (default 0.8)
+        departure_time  str   — ISO 8601 datetime               (default now+24 h)
+        current_soc     float — current battery SoC [0,1]       (default 0.2)
+        user_id         str   — Keycloak user ID                (optional)
+
+    Response::
+
+        {
+          "chargingProfile": {
+            "id": <int>,
+            "stackLevel": 0,
+            "chargingProfilePurpose": "TxDefaultProfile",
+            "chargingProfileKind": "Absolute",
+            "chargingSchedule": [{
+              "id": <int>,
+              "chargingRateUnit": "W",
+              "chargingSchedulePeriod": [
+                {"startPeriod": 0,    "limit": <watts>},
+                {"startPeriod": 3600, "limit": <watts>},
+                ...  (SCHEDULE_HOURS periods, one per hour)
+              ]
+            }]
+          }
+        }
+
+    ``GET /health``
+
+    Response::
+
+        {"status": "healthy", "model": "<path>", "max_power_kw": <float>}
 """
 
 import os
@@ -89,6 +93,19 @@ _DB = dict(
 
 # ── Model ──────────────────────────────────────────────────────────────────────
 def _find_model() -> Path:
+    """Locates the trained SAC model to serve.
+
+    Checks, in order: the ``MODEL_PATH`` environment variable, then the
+    two default paths written by :mod:`train` (``models/best_model`` and
+    ``models/sac_smart_charger_final``).
+
+    Returns:
+        pathlib.Path: Path to the model, without the ``.zip`` suffix
+        (as expected by ``SAC.load``).
+
+    Raises:
+        FileNotFoundError: If none of the candidate paths exist.
+    """
     for p in [
         Path(os.getenv("MODEL_PATH", "models/best_model")),
         Path("models/best_model"),
@@ -121,12 +138,21 @@ _power_lock = threading.Lock()
 
 
 def _get_evse_max_power_kw(station_id: str, ocpp_evse_id: int) -> float:
-    """
-    Return the maximum charging power (kW) for this EVSE.
+    """Returns the maximum charging power, in kW, for this EVSE.
 
-    Queries citrine DB for the highest Power.Active.Import value observed on
-    any transaction at this station.  Result is cached for 24 hours.
-    Falls back to the MAX_POWER_KW environment variable on any error.
+    Queries the citrine DB for the highest ``Power.Active.Import`` value
+    observed on any transaction at this station. The result is cached
+    in-process for 24 hours per ``station_id``/``ocpp_evse_id`` pair.
+
+    Args:
+        station_id: OCPP station identifier.
+        ocpp_evse_id: OCPP EVSE identifier. Currently unused in the query
+            (filtering is by station only) but kept as part of the cache
+            key for future per-EVSE filtering.
+
+    Returns:
+        float: Maximum power in kW. Falls back to the ``MAX_POWER_KW``
+        environment variable if the DB query fails or returns nothing.
     """
     key = f"{station_id}:{ocpp_evse_id}"
     with _power_lock:
@@ -171,6 +197,17 @@ _prices_lock = threading.Lock()
 
 
 def _fetch_prices_live() -> pd.DataFrame:
+    """Fetches day-ahead spot prices from the ENTSO-E API.
+
+    Returns:
+        pandas.DataFrame: Indexed by hourly, timezone-naive timestamp,
+        with columns ``price`` (€/kWh) and ``price_3h_future`` (the
+        price 3 hours ahead, forward-filled at the tail).
+
+    Raises:
+        ValueError: If the ``ENTSOE_TOKEN`` environment variable is not
+            set.
+    """
     token = os.getenv("ENTSOE_TOKEN")
     if not token:
         raise ValueError("ENTSOE_TOKEN not set")
@@ -186,6 +223,20 @@ def _fetch_prices_live() -> pd.DataFrame:
 
 
 def _load_prices_csv() -> pd.DataFrame:
+    """Loads day-ahead spot prices from the newest local CSV fallback.
+
+    Reads the most recent ``spot_*_new.csv`` file under ``INPUTS_DIR``
+    (as written by ``data/tariff.py``) and shifts its dates to the
+    current year if it's from a prior one, so the schedule always has
+    same-shape historical price data to fall back on.
+
+    Returns:
+        pandas.DataFrame: Same shape/columns as
+        :func:`_fetch_prices_live`.
+
+    Raises:
+        FileNotFoundError: If no ``spot_*_new.csv`` file exists.
+    """
     files = sorted(INPUTS_DIR.glob("spot_*_new.csv"), reverse=True)
     if not files:
         raise FileNotFoundError("No spot price file — run data/tariff.py")
@@ -202,6 +253,21 @@ def _load_prices_csv() -> pd.DataFrame:
 
 
 def _load_prices() -> pd.DataFrame:
+    """Returns spot prices, preferring a live fetch over cache over CSV.
+
+    Order of preference: an in-process cache younger than 1 hour, then a
+    live ENTSO-E fetch (:func:`_fetch_prices_live`), then the last
+    successfully cached value regardless of age, then the local CSV
+    fallback (:func:`_load_prices_csv`).
+
+    Returns:
+        pandas.DataFrame: Same shape/columns as
+        :func:`_fetch_prices_live`.
+
+    Raises:
+        FileNotFoundError: If a live fetch fails, no cached value exists,
+            and no local CSV fallback is available either.
+    """
     with _prices_lock:
         now = datetime.now()
         age = (
@@ -228,6 +294,17 @@ def _load_prices() -> pd.DataFrame:
 
 
 def _fetch_weather() -> pd.DataFrame:
+    """Fetches a 2-day hourly weather forecast from Open-Meteo.
+
+    Uses the coordinates configured via the ``WEATHER_LAT``/``WEATHER_LON``
+    environment variables. Results are cached on disk for 1 hour by the
+    underlying ``requests_cache`` session.
+
+    Returns:
+        pandas.DataFrame: Indexed by hourly, timezone-naive timestamp,
+        with columns ``temp_c``, ``radiation_wm2``, and
+        ``sunshine_duration_s``.
+    """
     resp = _wx_client.weather_api(
         "https://api.open-meteo.com/v1/forecast",
         params={
@@ -264,6 +341,18 @@ def _fetch_weather() -> pd.DataFrame:
 
 
 def _lookup(df: pd.DataFrame, t: datetime, col: str, default: float) -> float:
+    """Looks up an hourly value at or before a given timestamp.
+
+    Args:
+        df: DataFrame indexed by hourly timestamp.
+        t: Timestamp to look up; rounded down to the hour.
+        col: Column name to read.
+        default: Value to return if ``df`` has no row at or before ``t``.
+
+    Returns:
+        float: The value at the exact hour if present, otherwise the
+        most recent earlier value, otherwise ``default``.
+    """
     t0 = t.replace(minute=0, second=0, microsecond=0)
     if t0 in df.index:
         return float(df.loc[t0, col])
@@ -272,6 +361,14 @@ def _lookup(df: pd.DataFrame, t: datetime, col: str, default: float) -> float:
 
 
 def _is_holiday(dt: datetime) -> float:
+    """Checks whether a date is a public holiday in Berlin, Germany.
+
+    Args:
+        dt: Datetime to check (only the date part is used).
+
+    Returns:
+        float: ``1.0`` if ``dt`` is a Berlin public holiday, else ``0.0``.
+    """
     cal = hol_lib.country_holidays("DE", subdiv="BE", years=dt.year)
     return 1.0 if dt.date() in cal else 0.0
 
@@ -288,7 +385,26 @@ def _build_obs(
     target_soc: float,
     power_kw: float,
 ) -> np.ndarray:
-    """11-feature vector — must match EVChargingEnv observation space."""
+    """Builds the 11-feature observation vector for a single hour.
+
+    Feature order and normalization must exactly match
+    :meth:`envs.charging_env.EVChargingEnv._get_obs`.
+
+    Args:
+        price: Spot price, raw €/kWh.
+        price_3h: Spot price 3 hours ahead, raw €/kWh.
+        temp_c: Air temperature in °C.
+        radiation: Solar irradiance in W/m².
+        sunshine: Sunshine duration in seconds.
+        holiday: ``1.0`` if a public holiday, else ``0.0``.
+        soc: Current battery state of charge, ``[0, 1]``.
+        time_left_h: Hours remaining until departure.
+        target_soc: Target state of charge at departure, ``[0, 1]``.
+        power_kw: Station's maximum power rating in kW.
+
+    Returns:
+        numpy.ndarray: ``float32`` array of shape ``(11,)``.
+    """
     return np.array(
         [
             price,
@@ -320,17 +436,36 @@ def _guarantee_soc(
     max_power_kw: float,
     battery_capacity_kwh: float = BATTERY_CAPACITY_KWH,
 ) -> list[dict]:
-    """
-    Guarantee the target SoC is reached by the departure hour.
+    """Tops up the SAC-generated schedule so the target SoC is met.
 
-    1. Simulate the SoC trajectory using the periods generated by the SAC model.
-    2. If the projected SoC at departure falls short of target − SOC_TOLERANCE,
-       compute the remaining kWh needed.
-    3. Fill the cheapest available hours (those with spare capacity) from cheapest
-       to most expensive until the shortfall is covered.
+    1. Simulates the SoC trajectory that the SAC-generated ``periods``
+       would produce.
+    2. If the projected SoC at departure falls short of
+       ``target_soc - _SOC_TOLERANCE``, computes the remaining kWh
+       needed.
+    3. Fills the cheapest available hours (those with spare capacity)
+       from cheapest to most expensive until the shortfall is covered.
 
-    Negative spot prices are treated as the cheapest possible and are filled first
-    (the station earns money while charging).
+    Negative spot prices are treated as the cheapest possible and are
+    filled first, since the station earns money while charging then.
+
+    Args:
+        periods: Hourly charging periods as produced by the SAC model,
+            each a dict with at least a ``limit`` key (watts).
+        initial_soc: State of charge at the start of the schedule,
+            ``[0, 1]``.
+        target_soc: Desired state of charge at departure, ``[0, 1]``.
+        dep_hour: Hour index (0-based, relative to ``now``) at which the
+            vehicle departs.
+        prices: Spot price table, as returned by :func:`_load_prices`,
+            used to find the cheapest hours to top up.
+        now: Timestamp corresponding to ``periods[0]``.
+        max_power_kw: Station's maximum power rating in kW.
+        battery_capacity_kwh: Battery capacity in kWh.
+
+    Returns:
+        list[dict]: A new list of periods (the input is not mutated)
+        with any necessary top-up hours raised to cover the shortfall.
     """
     if dep_hour <= 0:
         return periods
@@ -384,6 +519,32 @@ def get_schedule(
     battery_capacity_kwh: float = Query(default=BATTERY_CAPACITY_KWH, gt=0.0),
     user_id: str | None = Query(default=None),
 ):
+    """Returns a 24-hour OCPP charging schedule for one EVSE.
+
+    Runs the SAC model over the next 24 hours of price/weather data to
+    produce an hourly charging-rate schedule, then applies
+    :func:`_guarantee_soc` to top up any hours needed so ``desired_soc``
+    is reached by ``departure_time``. See the module docstring for the
+    full request/response contract.
+
+    Args:
+        station_id: OCPP station identifier.
+        evse_id: OCPP EVSE identifier.
+        desired_soc: Target state of charge at departure, ``[0, 1]``.
+        departure_time: ISO 8601 datetime; defaults to
+            ``now + SCHEDULE_HOURS`` hours if omitted.
+        current_soc: Current battery state of charge, ``[0, 1]``.
+        battery_capacity_kwh: Battery capacity in kWh.
+        user_id: Optional Keycloak user ID; accepted but not currently
+            used to vary the schedule.
+
+    Returns:
+        dict: An OCPP 2.0.1 ``chargingProfile`` payload, as described in
+        the module docstring.
+
+    Raises:
+        HTTPException: 503 if spot price data can't be loaded.
+    """
     now = datetime.now(timezone.utc).replace(
         tzinfo=None, minute=0, second=0, microsecond=0
     )
@@ -494,5 +655,11 @@ def get_schedule(
 
 @app.get("/health")
 def health():
+    """Reports basic service health for uptime checks.
+
+    Returns:
+        dict: ``{"status": "healthy", "model": <model path>,
+        "max_power_kw": <float>}``.
+    """
     max_kw = _power_cache.get("cached_default", (MAX_POWER_KW,))[0]
     return {"status": "healthy", "model": str(_model_path), "max_power_kw": max_kw}

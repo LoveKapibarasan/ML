@@ -7,39 +7,58 @@ from gymnasium import spaces
 
 
 class EVChargingEnv(gym.Env):
+    """Gymnasium environment for scheduling EV charging at minimum cost.
+
+    The agent chooses a continuous charging rate each hour. It is rewarded
+    for charging when electricity is cheap and penalized for missing the
+    driver's target state-of-charge (SoC) by the departure hour.
+
+    Action space:
+        ``Box(1,)`` continuous, range ``[0, 1]`` — charging rate as a
+        fraction of the station's maximum power rating (``0`` = off,
+        ``1`` = full power).
+
+    Observation space:
+        ``Box(11,)``, unbounded (some features are raw, signed values).
+        Feature layout, in index order:
+
+        0. Spot price — raw €/kWh (can be negative).
+        1. Air temperature — ``(°C + 20) / 60``.
+        2. Solar irradiance — ``W/m² / 1000``.
+        3. Sunshine duration — ``s / 3600``, clipped to ``[0, 1]``.
+        4. Public holiday flag — ``0`` or ``1``.
+        5. Plugged-in flag — ``0`` or ``1``.
+        6. Battery SoC — ``[0, 1]``.
+        7. Time left to departure — ``hours / 24``, clamped to ``[0, 1]``.
+        8. Target SoC — ``[0, 1]``.
+        9. Max power rating — ``kW / 22``.
+        10. Spot price 3 hours ahead — raw €/kWh (can be negative).
+
+    Reward:
+        Per step: ``-(charging_rate * power_rating * price)`` in euros.
+        On the departure step: ``+20`` if ``SoC >= target_SoC - 0.02``,
+        otherwise ``-100 * shortfall``.
+
+    Attributes:
+        full_data (pandas.DataFrame): Hourly price/weather/plug-state rows,
+            loaded by :meth:`_load_data`.
+        demand_data (pandas.DataFrame): One row per charging session
+            (arrival, departure, target/initial SoC).
+        battery_capacity (float): Battery capacity in kWh, fixed at 50.0.
+        soc (float): Current state of charge, in ``[0, 1]``.
     """
-    EV smart-charging environment.
 
-    Action space
-    ------------
-    Continuous Box(1,) in [0, 1] — charging rate as a fraction of the
-    station's maximum power rating (0 = off, 1 = full power).
-
-    Observation space (11 features)
-    --------------------------------
-    idx  feature                 normalisation
-     0   spot price              raw €/kWh  (can be negative)
-     1   air temperature         (°C + 20) / 60
-     2   solar irradiance        W/m² / 1000
-     3   sunshine duration       s / 3600  → [0, 1]
-     4   public holiday flag     0 or 1
-     5   plugged-in flag         0 or 1
-     6   battery SoC             [0, 1]
-     7   time left to departure  hours / 24, clamped to [0, 1]
-     8   target SoC              [0, 1]
-     9   max power rating        kW / 22
-    10   spot price +3 h ahead   raw €/kWh  (can be negative)
-
-    Reward
-    ------
-    Per step : −(charging_rate × powerrating × price)   [€]
-    Departure: +20 if SoC ≥ target − 0.02, else −100 × shortfall
-    """
-
-    # Minimum charging rate treated as "off" (avoids infinitesimal charges)
+    #: Minimum charging rate treated as "off" (avoids infinitesimal charges).
     _CHARGE_THRESHOLD = 0.05
 
     def __init__(self, ev_id: int = 0, input_dir: str = "./inputs"):
+        """Initializes the environment and loads its input data.
+
+        Args:
+            ev_id: Identifier used to locate ``processed_data_{ev_id}.csv``
+                and ``processed_demand_{ev_id}.csv`` under ``input_dir``.
+            input_dir: Directory containing the preprocessed input CSVs.
+        """
         super().__init__()
 
         self.full_data, self.demand_data = self._load_data(ev_id, input_dir)
@@ -57,6 +76,18 @@ class EVChargingEnv(gym.Env):
     # ── data loading ──────────────────────────────────────────────────────────
 
     def _load_data(self, ev_id: int, input_dir: str):
+        """Loads the hourly data and demand-session tables from disk.
+
+        Args:
+            ev_id: Identifier used to locate the ``processed_data_{ev_id}.csv``
+                and ``processed_demand_{ev_id}.csv`` files.
+            input_dir: Directory containing the preprocessed input CSVs.
+
+        Returns:
+            tuple[pandas.DataFrame, pandas.DataFrame]: ``(full_data,
+            demand_data)`` — the hourly price/weather/plug-state table and
+            the per-session demand table, respectively.
+        """
         path = Path(input_dir).resolve()
         df = pd.read_csv(path / f"processed_data_{ev_id}.csv", parse_dates=["date"])
         df_demand = pd.read_csv(
@@ -68,6 +99,12 @@ class EVChargingEnv(gym.Env):
     # ── observation ───────────────────────────────────────────────────────────
 
     def _get_obs(self) -> np.ndarray:
+        """Builds the 11-feature observation vector for the current step.
+
+        Returns:
+            numpy.ndarray: ``float32`` array of shape ``(11,)`` — see the
+            class docstring for the feature layout.
+        """
         row = self.full_data.iloc[self.current_step]
         demand = self.demand_data.iloc[self.current_demand_idx]
 
@@ -101,6 +138,23 @@ class EVChargingEnv(gym.Env):
         is_departure: bool,
         demand: pd.Series,
     ) -> float:
+        """Computes the reward for one step.
+
+        Args:
+            rate: Charging rate in ``[0, 1]``, as a fraction of the
+                station's power rating.
+            row: The current row of :attr:`full_data` (price, power
+                rating, plug state, etc.).
+            is_departure: Whether this step is the session's departure
+                step.
+            demand: The current row of :attr:`demand_data` (holds
+                ``target_soc`` for the shortfall penalty).
+
+        Returns:
+            float: Reward in euros — negative charging cost, plus (on
+            departure) a ``+20`` bonus or a proportional shortfall
+            penalty.
+        """
         reward = 0.0
 
         pluggedin = str(row["pluggedin"]).lower() not in ("false", "0", "")
@@ -121,6 +175,17 @@ class EVChargingEnv(gym.Env):
     # ── step / reset ──────────────────────────────────────────────────────────
 
     def step(self, action):
+        """Advances the environment by one hour.
+
+        Args:
+            action: Array-like containing a single charging rate in
+                ``[0, 1]``; values outside that range are clipped.
+
+        Returns:
+            tuple: ``(observation, reward, terminated, truncated, info)``
+            following the Gymnasium API. ``truncated`` is always
+            ``False``; ``info`` is always ``{}``.
+        """
         rate = float(
             np.clip(np.asarray(action).flat[0], 0.0, 1.0)
         )  # scalar charging rate
@@ -149,6 +214,17 @@ class EVChargingEnv(gym.Env):
         return self._get_obs(), reward, done, False, {}
 
     def reset(self, seed=None, options=None):
+        """Resets the environment to the first row of the first session.
+
+        Args:
+            seed: Optional random seed, forwarded to
+                ``gymnasium.Env.reset``.
+            options: Unused; accepted for Gymnasium API compatibility.
+
+        Returns:
+            tuple[numpy.ndarray, dict]: ``(observation, info)``, with
+            ``info`` always ``{}``.
+        """
         super().reset(seed=seed)
         self.current_step = 0
         self.current_demand_idx = 0
