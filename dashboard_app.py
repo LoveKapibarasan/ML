@@ -20,6 +20,7 @@ Run it with::
 or via ``scripts/dashboard.sh start``.
 """
 
+import base64
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -37,6 +38,7 @@ config.load()
 SERVE_URL = os.getenv("SERVE_URL", "http://127.0.0.1:8000").rstrip("/")
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 PAGE_ICON = ASSETS_DIR / "favicon-32.png"
+SIGN_IN_MARK = ASSETS_DIR / "favicon-180.png"
 API_TOKEN = os.getenv("DASHBOARD_API_TOKEN", "")
 # Escape hatch for local development only; the deployed service leaves it unset.
 ALLOW_ANONYMOUS = os.getenv("DASHBOARD_ALLOW_ANONYMOUS", "") == "1"
@@ -141,6 +143,7 @@ I18N = {
         "auth_signed_in": "Signed in as {v}",
         "auth_unconfigured": "Authentication is not configured, so the dashboard will not start. Provide the Keycloak settings in .streamlit/secrets.toml (scripts/dashboard.sh writes them from Infisical).",
         "auth_anonymous": "Running without authentication (DASHBOARD_ALLOW_ANONYMOUS=1). Never use this outside local development.",
+        "auth_sso_note": "Single sign-on via Keycloak",
     },
     "ja": {
         "page_title": "EV スマート充電",
@@ -216,6 +219,7 @@ I18N = {
         "auth_signed_in": "{v} としてサインイン中",
         "auth_unconfigured": "認証が未設定のためダッシュボードを起動できません。Keycloak の設定を .streamlit/secrets.toml に用意してください（scripts/dashboard.sh が Infisical から書き出します）。",
         "auth_anonymous": "認証なしで動作しています（DASHBOARD_ALLOW_ANONYMOUS=1）。ローカル開発以外では使用しないでください。",
+        "auth_sso_note": "Keycloak によるシングルサインオン",
     },
     "de": {
         "page_title": "EV-Smart-Charging",
@@ -291,6 +295,7 @@ I18N = {
         "auth_signed_in": "Angemeldet als {v}",
         "auth_unconfigured": "Die Authentifizierung ist nicht konfiguriert, daher startet das Dashboard nicht. Hinterlegen Sie die Keycloak-Einstellungen in .streamlit/secrets.toml (scripts/dashboard.sh schreibt sie aus Infisical).",
         "auth_anonymous": "Läuft ohne Authentifizierung (DASHBOARD_ALLOW_ANONYMOUS=1). Außerhalb der lokalen Entwicklung niemals verwenden.",
+        "auth_sso_note": "Single Sign-on über Keycloak",
     },
 }
 
@@ -354,17 +359,97 @@ def require_login(lang: str) -> bool:
         return False
 
     if not st.user.is_logged_in:
-        st.title(tr(lang, "title"))
-        st.info(tr(lang, "auth_required"), icon="🔒")
-        st.button(
-            tr(lang, "auth_sign_in"),
-            type="primary",
-            on_click=st.login,
-            args=(AUTH_PROVIDER,),
-        )
+        sign_in_page(lang)
         return False
 
     return True
+
+
+# Signed out there is nothing to filter, so the sidebar is hidden and the page
+# collapses to a single centred card — a sign-in screen rather than an empty
+# dashboard carrying an alert box.
+_SIGN_IN_CSS = """
+<style>
+  [data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"] { display: none; }
+  [data-testid="stMainBlockContainer"] { padding-top: 9vh; }
+  /* Streamlit's own bordered container is the card; styling it here keeps the
+     widgets inside it, which a hand-written <div> cannot do — each st.markdown
+     call is closed off in its own block. */
+  [data-testid="stVerticalBlockBorderWrapper"] { border-radius: 14px; }
+  [data-testid="stVerticalBlockBorderWrapper"] > div > div { padding: 6px 4px; }
+  .signin-head { text-align: center; }
+  .signin-head img { width: 56px; height: 56px; border-radius: 12px; }
+  .signin-head .t { font-size: 1.3rem; font-weight: 620; margin: 16px 0 6px; }
+  .signin-head .s { font-size: .92rem; opacity: .72; line-height: 1.5; margin: 0 0 18px; }
+  .signin-foot { font-size: .78rem; opacity: .55; text-align: center; margin-top: 12px; }
+</style>
+"""
+
+
+@st.cache_data(show_spinner=False)
+def _mark_data_uri() -> str:
+    """Returns the brand mark as a data URI, or an empty string if absent.
+
+    Inlining it keeps the whole card in one markdown block, which is what
+    lets the mark, heading and copy share a single centred layout.
+
+    Returns:
+        str: An ``<img>`-ready data URI, or ``""``.
+    """
+    if not SIGN_IN_MARK.exists():
+        return ""
+    return (
+        "data:image/png;base64," + base64.b64encode(SIGN_IN_MARK.read_bytes()).decode()
+    )
+
+
+def sign_in_page(lang: str) -> None:
+    """Renders the signed-out screen: a centred card, and nothing else.
+
+    Args:
+        lang: Active language code.
+    """
+    st.markdown(_SIGN_IN_CSS, unsafe_allow_html=True)
+    _, middle, _ = st.columns([1, 1.15, 1])
+
+    with middle:
+        with st.container(border=True):
+            mark = _mark_data_uri()
+            st.markdown(
+                '<div class="signin-head">'
+                + (f'<img src="{mark}" alt="">' if mark else "")
+                + f'<div class="t">{tr(lang, "page_title")}</div>'
+                + f'<div class="s">{tr(lang, "auth_required")}</div>'
+                + "</div>",
+                unsafe_allow_html=True,
+            )
+            st.button(
+                tr(lang, "auth_sign_in"),
+                type="primary",
+                width="stretch",
+                on_click=st.login,
+                args=(AUTH_PROVIDER,),
+            )
+
+        # The sidebar is hidden here, so the language control has to live on the
+        # sign-in screen or the other two languages are unreachable signed out.
+        inner = st.columns([1, 1.4, 1])[1]
+        with inner:
+            picked = st.selectbox(
+                I18N[lang]["language"],
+                list(LANGUAGES),
+                index=list(LANGUAGES.values()).index(lang),
+                key="lang_choice_signin",
+                label_visibility="collapsed",
+            )
+        if LANGUAGES[picked] != lang:
+            st.session_state["lang"] = LANGUAGES[picked]
+            st.rerun()
+
+        st.markdown(
+            f'<div class="signin-foot">{tr(lang, "auth_sso_note")}</div>',
+            unsafe_allow_html=True,
+        )
 
 
 def account_controls(lang: str) -> None:
