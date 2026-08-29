@@ -18,7 +18,7 @@ export SERVE_URL="${SERVE_URL:-http://127.0.0.1:${SERVE_PORT:-8000}}"
 # Keycloak (same realm as the operator tools). Values come from Infisical.
 INFISICAL_PROJECT="${INFISICAL_PROJECT:-citrineos}"
 INFISICAL_ENV="${INFISICAL_ENV:-staging}"
-INFISICAL_PATH="${INFISICAL_PATH:-/ops-tool}"
+INFISICAL_PATH="${INFISICAL_PATH:-/ev-dashboard}"
 KEYCLOAK_URL="${KEYCLOAK_URL:-https://login.ai-charge.net}"
 KEYCLOAK_REALM="${KEYCLOAK_REALM:-AI-Charge-Technologies}"
 PUBLIC_URL="${DASHBOARD_PUBLIC_URL:-http://${HOST}:${PORT}}"
