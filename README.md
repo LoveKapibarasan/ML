@@ -224,22 +224,21 @@ well as hue.
 
 The dashboard is gated by **Keycloak** — the `AI-Charge-Technologies` realm at
 `https://login.ai-charge.net`, the same one the operator tools use — through
-Streamlit's native OIDC support.  It has its **own** confidential client,
-`ev-dashboard`, so its redirect URIs stay independent of `internal`'s.
+Streamlit's native OIDC support.
 
 `scripts/dashboard.sh` writes `.streamlit/secrets.toml` (git-ignored, mode 600)
 at startup, reading `KEYCLOAK_CLIENT_ID` / `KEYCLOAK_CLIENT_SECRET` from
-Infisical (`citrineos` project, `/ev-dashboard`) or from the environment.  No
-client secret is ever committed.
+Infisical (`citrineos` project, `/ops-tool`) or from the environment.  No client
+secret is ever committed.
 
 It **fails closed**: with no provider configured the dashboard refuses to render.
 `DASHBOARD_ALLOW_ANONYMOUS=1` bypasses this **for local development only** and
 shows a persistent warning banner.
 
-> The `ev-dashboard` client must have `<DASHBOARD_PUBLIC_URL>/oauth2callback`
-> among its redirect URIs, or Keycloak answers `Invalid parameter: redirect_uri`.
-> Registered so far: `http://172.25.20.20:8501` and `http://localhost:8501`.
-> Adding a new deployment URL is a realm-admin step, done once.
+> The Keycloak client must have the dashboard's
+> `<DASHBOARD_PUBLIC_URL>/oauth2callback` registered as a valid redirect URI, or
+> Keycloak answers `Invalid parameter: redirect_uri`.  This is a realm-admin
+> step, done once per deployment URL.
 
 ```bash
 ./scripts/dashboard.sh start    # start in background (PID in .dashboard.pid)
