@@ -77,3 +77,37 @@ def test_schedule_returns_503_when_price_data_is_missing(monkeypatch):
 
     assert response.status_code == 503
     assert "No spot price file" in response.json()["detail"]
+
+
+def test_importing_serve_does_not_require_a_checkpoint(monkeypatch):
+    """CI has no models/ — importing must not be the thing that loads it."""
+    import serve as serve_module
+
+    monkeypatch.setattr(serve_module, "_model_path", None)
+    monkeypatch.setattr(serve_module, "model", None)
+
+    def no_checkpoint():
+        raise FileNotFoundError("No trained model found")
+
+    monkeypatch.setattr(serve_module, "_find_model", no_checkpoint)
+
+    # Reporting is tolerant …
+    assert serve_module.model_path() == "not found"
+    assert TestClient(serve_module.app).get("/health").status_code == 200
+    # … but actually serving is not.
+    with pytest.raises(FileNotFoundError):
+        serve_module.get_model()
+
+
+def test_get_model_returns_an_already_assigned_policy(monkeypatch):
+    sentinel = object()
+    import serve as serve_module
+
+    monkeypatch.setattr(serve_module, "model", sentinel)
+
+    def explode():
+        raise AssertionError("must not reload when a policy is already set")
+
+    monkeypatch.setattr(serve_module, "_find_model", explode)
+
+    assert serve_module.get_model() is sentinel

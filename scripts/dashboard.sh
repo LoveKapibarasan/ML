@@ -109,9 +109,7 @@ cmd_start() {
         exit 1
     fi
     _activate
-    PUBLIC_URL="$(_cfg DASHBOARD_PUBLIC_URL)"
-    PUBLIC_URL="${PUBLIC_URL:-http://${HOST}:${PORT}}"
-    _write_secrets
+    cmd_secrets
     echo "[$(date '+%F %T')] Starting dashboard on http://$HOST:$PORT (API: $SERVE_URL) ..." | tee -a "$LOG_FILE"
     nohup streamlit run "$ROOT_DIR/dashboard_app.py" \
         --server.address "$HOST" \
@@ -176,6 +174,16 @@ cmd_logs() {
     tail -f "$LOG_FILE"
 }
 
+# Writes .streamlit/secrets.toml and exits. This is what the systemd unit
+# calls from ExecStartPre, so the service and the manual launcher configure
+# authentication through exactly the same code.
+cmd_secrets() {
+    _activate
+    PUBLIC_URL="$(_cfg DASHBOARD_PUBLIC_URL)"
+    PUBLIC_URL="${PUBLIC_URL:-http://${HOST}:${PORT}}"
+    _write_secrets
+}
+
 CMD="${1:-start}"
 case "$CMD" in
     start)   cmd_start   ;;
@@ -183,8 +191,9 @@ case "$CMD" in
     restart) cmd_stop; cmd_start ;;
     status)  cmd_status  ;;
     logs)    cmd_logs    ;;
+    secrets) cmd_secrets ;;
     *)
-        echo "Usage: $0 {start|stop|restart|status|logs}"
+        echo "Usage: $0 {start|stop|restart|status|logs|secrets}"
         exit 1
         ;;
 esac

@@ -1,0 +1,27 @@
+# SAC Smart Charging — inference API
+#
+# Installed by deploy/install.sh, which fills in the placeholders below.
+# Edit this file, not the copy under /etc/systemd/system.
+
+[Unit]
+Description=SAC Smart Charging inference API (FastAPI)
+Documentation=https://gitea.ai-charge.net/AI-ChargeTechnologies/ML
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__ROOT__
+# Holds only the Infisical machine identity; config.load() pulls the rest.
+EnvironmentFile=__ROOT__/.env
+ExecStart=__ROOT__/.venv/bin/uvicorn serve:app --host __API_HOST__ --port __API_PORT__ --workers 1
+Restart=on-failure
+RestartSec=5
+# The model is loaded on first request and takes a moment.
+TimeoutStartSec=120
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

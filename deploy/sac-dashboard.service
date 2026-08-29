@@ -1,0 +1,36 @@
+# EV Smart Charging — operations dashboard
+#
+# Installed by deploy/install.sh, which fills in the placeholders below.
+# Edit this file, not the copy under /etc/systemd/system.
+
+[Unit]
+Description=EV Smart Charging operations dashboard (Streamlit)
+Documentation=https://gitea.ai-charge.net/AI-ChargeTechnologies/ML
+# Reads the API over HTTP, so it prefers to start after it — but it starts
+# fine without it and shows the connection error on the page.
+After=network-online.target sac-charging.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__ROOT__
+EnvironmentFile=__ROOT__/.env
+Environment=SERVE_URL=http://127.0.0.1:__API_PORT__
+# Writes .streamlit/secrets.toml from Infisical before Streamlit reads it.
+# Fails closed: no Keycloak credentials means the unit does not start.
+ExecStartPre=__ROOT__/scripts/dashboard.sh secrets
+ExecStart=__ROOT__/.venv/bin/streamlit run dashboard_app.py \
+    --server.address __DASH_HOST__ \
+    --server.port __DASH_PORT__ \
+    --server.headless true \
+    --client.toolbarMode minimal \
+    --browser.gatherUsageStats false
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=120
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

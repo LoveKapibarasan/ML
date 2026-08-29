@@ -301,7 +301,7 @@ ML/
 ├── scripts/run_pipeline.sh  # One-shot: fetch data → preprocess → train
 ├── scripts/serve.sh         # Service manager (start/stop/restart/status/logs)
 ├── scripts/dashboard.sh     # Dashboard service manager
-├── scripts/install_service.sh # Register serve.py as a systemd service
+├── deploy/                  # systemd units + installer (git-tracked config)
 ├── .env                     # Secrets — git-ignored
 └── .env.example             # Template — commit this, not .env
 ```
@@ -434,18 +434,23 @@ python benchmark.py
 ./scripts/serve.sh logs     # tail -f serve.log
 ```
 
-**Option B – systemd service (auto-start on boot)**
+**Option B – systemd services (auto-start on boot)**
+
+Both the API and the dashboard run as services; the units live in
+[`deploy/`](deploy/) so the deployed configuration is in git.
 
 ```bash
-sudo ./scripts/install_service.sh
-# Generates /etc/systemd/system/sac-charging.service from the current directory,
-# enables it, and starts it immediately.
+sudo ./deploy/install.sh
+# Fills the paths and ports into deploy/*.service, installs them to
+# /etc/systemd/system, enables both, and starts them.
 
-systemctl status  sac-charging
-systemctl stop    sac-charging
-systemctl restart sac-charging
+systemctl status  sac-charging sac-dashboard
+systemctl restart sac-dashboard
 journalctl -u     sac-charging -f   # live logs
+sudo ./deploy/uninstall.sh          # stop, disable and remove
 ```
+
+See [`deploy/README.md`](deploy/README.md) for the details.
 
 Then set `SMARTCHARGING_ENDPOINT=http://<this-host>:8000/schedule` in
 `citrineos-payment`'s `.env`.
@@ -457,7 +462,9 @@ Then set `SMARTCHARGING_ENDPOINT=http://<this-host>:8000/schedule` in
 # → http://<this-host>:8501
 ```
 
-It reads the inference server started in step 6, so start that first.
+It reads the inference server started in step 6, so start that first.  On a
+deployed host use `sudo ./deploy/install.sh` instead, which runs both as
+systemd services.
 
 ---
 

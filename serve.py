@@ -151,8 +151,47 @@ def _find_model() -> Path:
     raise FileNotFoundError("No trained model found — run train.py first.")
 
 
-_model_path = _find_model()
-model = SAC.load(str(_model_path))
+# Loaded on first use rather than at import. Importing this module is not the
+# same as being ready to serve: the tests, the docs build and the lint job all
+# import it on machines that have no checkpoint (models/ is git-ignored), and
+# an import-time load turned that into a hard failure.
+_model_path: Path | None = None
+model = None
+
+
+def get_model():
+    """Returns the SAC policy, loading it on first use.
+
+    Returns:
+        stable_baselines3.SAC: The loaded policy. A policy already
+        assigned to the module-level ``model`` (as the tests do) is
+        returned untouched.
+
+    Raises:
+        FileNotFoundError: If no checkpoint can be found.
+    """
+    global _model_path, model
+    if model is None:
+        _model_path = _find_model()
+        model = SAC.load(str(_model_path))
+    return model
+
+
+def model_path() -> str:
+    """Returns the checkpoint path for display, without loading it.
+
+    Returns:
+        str: The resolved path, or ``"not found"`` if there is no
+        checkpoint — reporting that is more useful than raising from a
+        health check.
+    """
+    global _model_path
+    if _model_path is None:
+        try:
+            _model_path = _find_model()
+        except FileNotFoundError:
+            return "not found"
+    return str(_model_path)
 
 # ── Weather (HTTP cache 1 h) ───────────────────────────────────────────────────
 _wx_client = openmeteo_requests.Client(
@@ -662,7 +701,7 @@ def compute_schedule(
                 target_soc,
                 max_power_kw,
             )
-            action, _ = model.predict(obs, deterministic=True)
+            action, _ = get_model().predict(obs, deterministic=True)
             rate = float(np.clip(action[0], 0.0, 1.0))
             if rate < _CHARGE_THRESHOLD:
                 rate = 0.0
@@ -974,7 +1013,7 @@ def get_dashboard_data(
         schedule=schedule,
         actual_series=actual_series,
         sessions=sessions,
-        model_path=str(_model_path),
+        model_path=model_path(),
         now=now,
         departure=dep,
         current_soc=float(np.clip(current_soc, 0.0, 1.0)),
@@ -998,4 +1037,4 @@ def health():
         "max_power_kw": <float>}``.
     """
     max_kw = _power_cache.get("cached_default", (MAX_POWER_KW,))[0]
-    return {"status": "healthy", "model": str(_model_path), "max_power_kw": max_kw}
+    return {"status": "healthy", "model": model_path(), "max_power_kw": max_kw}
