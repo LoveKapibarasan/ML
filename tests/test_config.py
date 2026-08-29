@@ -18,6 +18,10 @@ def _isolate(monkeypatch):
         "INFISICAL_PROJECT_ID",
         "INFISICAL_ENV",
         "INFISICAL_PATH",
+        # cleared too: a real deployment may already have these in the
+        # environment, which would mask what the test is asserting
+        "DB_PASSWORD",
+        "ENTSOE_TOKEN",
     ):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(config, "_loaded", False)
@@ -143,7 +147,6 @@ def test_the_environment_wins_over_the_vault(monkeypatch):
 
     assert os.environ["DB_PASSWORD"] == "local-override"
     assert os.environ["ENTSOE_TOKEN"] == "from-vault"
-    monkeypatch.delenv("ENTSOE_TOKEN", raising=False)
 
 
 def test_load_fetches_once(monkeypatch):

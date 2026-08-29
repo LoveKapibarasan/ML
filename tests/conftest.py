@@ -9,6 +9,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+import config  # noqa: E402  (must follow the sys.path insert)
+
+# On a host that has an Infisical identity, importing serve would otherwise
+# fetch the real vault and inject it into the whole pytest process. Mark the
+# load as already done so the suite runs against fixtures only.
+config._loaded = True
+
 
 class FakeModel:
     """Stands in for the trained SAC policy: a constant half-rate action."""
