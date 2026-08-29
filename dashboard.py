@@ -68,6 +68,10 @@ def fetch_actuals(
     Averages the ``Power.Active.Import`` measurand (total phase) per hour
     over the requested window, the same reading
     :func:`serve._get_evse_max_power_kw` and ``data/ev_from_db.py`` use.
+
+    ``sampledValue`` is declared ``json`` (not ``jsonb``) in citrine, so
+    the cast is required: ``jsonb_array_elements`` has no ``json``
+    overload and the query errors without it.
     Energy is approximated as ``power_kw x 1 h``, which matches the
     hourly resolution the model and the spot price both work at.
 
@@ -98,7 +102,7 @@ def fetch_actuals(
                        AVG((sv->>'value')::float) / 1000.0                 AS power_kw
                 FROM   "MeterValues"  mv
                 JOIN   "Transactions" t  ON t.id = mv."transactionDatabaseId"
-                CROSS  JOIN LATERAL jsonb_array_elements(mv."sampledValue") sv
+                CROSS  JOIN LATERAL jsonb_array_elements(mv."sampledValue"::jsonb) sv
                 WHERE  t."stationId"    = %s
                   AND  sv->>'measurand' = 'Power.Active.Import'
                   AND  sv->>'phase'     IS NULL
