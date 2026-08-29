@@ -46,6 +46,35 @@ API contract:
           }
         }
 
+    ``GET /api/dashboard``
+
+    Everything the Streamlit operations dashboard renders
+    (``dashboard_app.py``): the same schedule as ``/schedule``, but with
+    the per-hour price / weather / SoC context that produced it, plus the
+    measured history read from the citrine DB.
+
+    Query params: as ``/schedule`` (``station_id`` and ``evse_id``
+    default to the ``DASHBOARD_STATION_ID`` / ``DASHBOARD_EVSE_ID``
+    env vars), plus ``history_hours`` (default 24).
+
+    Response::
+
+        {
+          "station_id": ..., "evse_id": ..., "generated_at": ...,
+          "max_power_kw": ..., "current_soc": ..., "target_soc": ...,
+          "departure_time": ..., "departure_hour_index": ...,
+          "kpi":      { ...projected SoC, cost, savings, energy... },
+          "forecast": [ ...SCHEDULE_HOURS hourly rows... ],
+          "actuals":  [ ...history_hours measured rows... ],
+          "sessions": [ ...recent Transactions... ],
+          "data_sources": {"prices": ..., "weather": ..., "db": ...},
+          "warnings": [...]
+        }
+
+    A database outage is not fatal here: ``actuals`` and ``sessions``
+    come back empty, ``data_sources.db`` reads ``"unavailable"``, and a
+    warning is added — the forecast half is unaffected.
+
     ``GET /health``
 
     Response::
@@ -70,6 +99,8 @@ from fastapi import FastAPI, HTTPException, Query
 from retry_requests import retry
 from stable_baselines3 import SAC
 
+import dashboard
+
 load_dotenv()
 
 # ── Config ─────────────────────────────────────────────────────────────────────
@@ -79,6 +110,8 @@ WEATHER_LAT = float(os.getenv("WEATHER_LAT", "52.52"))
 WEATHER_LON = float(os.getenv("WEATHER_LON", "13.41"))
 INPUTS_DIR = Path(os.getenv("INPUTS_DIR", "inputs"))
 SCHEDULE_HOURS = 24
+DASHBOARD_STATION_ID = os.getenv("DASHBOARD_STATION_ID", "cp001")
+DASHBOARD_EVSE_ID = int(os.getenv("DASHBOARD_EVSE_ID", "1"))
 _CHARGE_THRESHOLD = 0.05
 _SOC_TOLERANCE = 0.02  # SoC within 2 % of target = "met"
 
@@ -192,12 +225,15 @@ def _get_evse_max_power_kw(station_id: str, ocpp_evse_id: int) -> float:
 
 # ── Price data (ENTSO-E live + CSV fallback, cache 1 h) ───────────────────────
 
-_prices_cache: dict = {"df": None, "fetched_at": None}
+_prices_cache: dict = {"df": None, "fetched_at": None, "source": None}
 _prices_lock = threading.Lock()
 
 
 def _fetch_prices_live() -> pd.DataFrame:
     """Fetches day-ahead spot prices from the ENTSO-E API.
+
+    The window starts one day before today so the measured history the
+    dashboard shows can be priced as well as the schedule ahead.
 
     Returns:
         pandas.DataFrame: Indexed by hourly, timezone-naive timestamp,
@@ -212,8 +248,10 @@ def _fetch_prices_live() -> pd.DataFrame:
     if not token:
         raise ValueError("ENTSOE_TOKEN not set")
     client = EntsoePandasClient(api_key=token)
-    start = pd.Timestamp.now(tz="UTC").normalize()
-    end = start + pd.Timedelta(days=2)
+    # Reach back one day so the dashboard can price the measured history,
+    # not just the schedule ahead.
+    start = pd.Timestamp.now(tz="UTC").normalize() - pd.Timedelta(days=1)
+    end = start + pd.Timedelta(days=3)
     ts = client.query_day_ahead_prices("DE_LU", start=start, end=end)
     df = ts.to_frame(name="price")
     df.index = df.index.tz_convert(None)
@@ -279,14 +317,15 @@ def _load_prices() -> pd.DataFrame:
             return _prices_cache["df"]
         try:
             df = _fetch_prices_live()
-            _prices_cache.update({"df": df, "fetched_at": now})
+            _prices_cache.update({"df": df, "fetched_at": now, "source": "live"})
             return df
         except Exception:
             pass
         if _prices_cache["df"] is not None:
+            _prices_cache["source"] = "stale-cache"
             return _prices_cache["df"]
         df = _load_prices_csv()
-        _prices_cache.update({"df": df, "fetched_at": now})
+        _prices_cache.update({"df": df, "fetched_at": now, "source": "csv"})
         return df
 
 
@@ -358,6 +397,31 @@ def _lookup(df: pd.DataFrame, t: datetime, col: str, default: float) -> float:
         return float(df.loc[t0, col])
     earlier = df[df.index <= t0]
     return float(earlier[col].iloc[-1]) if not earlier.empty else default
+
+
+def _lookup_opt(df: pd.DataFrame, t: datetime, col: str) -> float | None:
+    """Looks up an hourly value, distinguishing "no data" from zero.
+
+    :func:`_lookup` substitutes a default when the table does not reach
+    back to ``t``, which is right for the model's observation vector but
+    wrong for reporting: a missing spot price would silently become a
+    EUR 0.00 cost. This variant returns ``None`` instead so the caller can
+    show a gap.
+
+    Args:
+        df: DataFrame indexed by hourly timestamp.
+        t: Timestamp to look up; rounded down to the hour.
+        col: Column name to read.
+
+    Returns:
+        float | None: The value at or before ``t``, or ``None`` if the
+        table has no row that early.
+    """
+    t0 = t.replace(minute=0, second=0, microsecond=0)
+    if t0 in df.index:
+        return float(df.loc[t0, col])
+    earlier = df[df.index <= t0]
+    return float(earlier[col].iloc[-1]) if not earlier.empty else None
 
 
 def _is_holiday(dt: datetime) -> float:
@@ -506,78 +570,63 @@ def _guarantee_soc(
     return periods
 
 
-# ── Endpoints ──────────────────────────────────────────────────────────────────
+# ── Schedule core ──────────────────────────────────────────────────────────────
 
 
-@app.get("/schedule")
-def get_schedule(
-    station_id: str = Query(..., description="OCPP station ID"),
-    evse_id: int = Query(..., description="OCPP EVSE ID (integer)"),
-    desired_soc: float = Query(default=0.8, ge=0.0, le=1.0),
-    departure_time: str | None = Query(default=None),
-    current_soc: float = Query(default=0.2, ge=0.0, le=1.0),
-    battery_capacity_kwh: float = Query(default=BATTERY_CAPACITY_KWH, gt=0.0),
-    user_id: str | None = Query(default=None),
-):
-    """Returns a 24-hour OCPP charging schedule for one EVSE.
+def compute_schedule(
+    station_id: str,
+    evse_id: int,
+    current_soc: float,
+    desired_soc: float,
+    dep: datetime,
+    now: datetime,
+    battery_capacity_kwh: float = BATTERY_CAPACITY_KWH,
+) -> dict:
+    """Runs the SAC model over the schedule horizon and guarantees SoC.
 
-    Runs the SAC model over the next 24 hours of price/weather data to
-    produce an hourly charging-rate schedule, then applies
-    :func:`_guarantee_soc` to top up any hours needed so ``desired_soc``
-    is reached by ``departure_time``. See the module docstring for the
-    full request/response contract.
+    This is the shared core behind both :func:`get_schedule` (which keeps
+    only the OCPP periods) and :func:`get_dashboard_data` (which needs
+    the full per-hour context). Keeping one implementation means the
+    dashboard can never drift from the schedule actually sent to the
+    charger.
+
+    The SoC trajectory reported in ``hours`` is recomputed from the
+    *final* limits, i.e. after :func:`_guarantee_soc` has topped up the
+    cheapest hours, so it reflects what the EVSE will really deliver.
 
     Args:
         station_id: OCPP station identifier.
         evse_id: OCPP EVSE identifier.
-        desired_soc: Target state of charge at departure, ``[0, 1]``.
-        departure_time: ISO 8601 datetime; defaults to
-            ``now + SCHEDULE_HOURS`` hours if omitted.
         current_soc: Current battery state of charge, ``[0, 1]``.
+        desired_soc: Target state of charge at departure, ``[0, 1]``.
+        dep: Departure time (naive UTC).
+        now: Start of the schedule horizon, on the hour (naive UTC).
         battery_capacity_kwh: Battery capacity in kWh.
-        user_id: Optional Keycloak user ID; accepted but not currently
-            used to vary the schedule.
 
     Returns:
-        dict: An OCPP 2.0.1 ``chargingProfile`` payload, as described in
-        the module docstring.
+        dict: With keys ``periods`` (OCPP ``chargingSchedulePeriod``
+        list), ``hours`` (per-hour detail), ``max_power_kw``,
+        ``dep_hour``, ``projected_soc``, ``soc_target_met``, ``prices``
+        (the price frame used) and ``weather_ok``.
 
     Raises:
-        HTTPException: 503 if spot price data can't be loaded.
+        FileNotFoundError: If no spot price data is available at all.
     """
-    now = datetime.now(timezone.utc).replace(
-        tzinfo=None, minute=0, second=0, microsecond=0
-    )
-
-    # ── Parse departure time ──────────────────────────────────────────────────
-    if departure_time:
-        dep = pd.to_datetime(departure_time)
-        if dep.tzinfo is not None:
-            dep = dep.tz_convert(None)
-        dep = dep.to_pydatetime().replace(tzinfo=None)
-    else:
-        dep = now + timedelta(hours=SCHEDULE_HOURS)
-
-    dep_hour = max(0, min(int((dep - now).total_seconds() / 3600), SCHEDULE_HOURS))
-
-    # ── Load real-time data ───────────────────────────────────────────────────
-    try:
-        prices = _load_prices()
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    prices = _load_prices()
 
     try:
         weather = _fetch_weather()
     except Exception:
         weather = pd.DataFrame()
 
-    # ── Get EVSE max power from DB ────────────────────────────────────────────
     max_power_kw = _get_evse_max_power_kw(station_id, evse_id)
+    dep_hour = max(0, min(int((dep - now).total_seconds() / 3600), SCHEDULE_HOURS))
 
-    # ── SAC schedule simulation ───────────────────────────────────────────────
     soc = float(np.clip(current_soc, 0.0, 1.0))
     target_soc = float(np.clip(desired_soc, 0.0, 1.0))
     initial_soc = soc
+
+    context: list[dict] = []
     periods: list[dict] = []
 
     for h in range(SCHEDULE_HOURS):
@@ -618,11 +667,23 @@ def get_schedule(
 
         limit_w = int(round(rate * max_power_kw * 1000))
         periods.append({"startPeriod": h * 3600, "limit": limit_w})
+        context.append(
+            {
+                "t": t,
+                "price": price,
+                "price_3h": price_3h,
+                "temp": temp,
+                "rad": rad,
+                "sun": sun,
+                "holiday": holiday,
+            }
+        )
 
         if rate > 0:
             soc = min(1.0, soc + rate * max_power_kw / battery_capacity_kwh)
 
     # ── SoC guarantee: fill cheapest hours if target will not be met ──────────
+    model_limits = [p["limit"] for p in periods]
     periods = _guarantee_soc(
         periods,
         initial_soc,
@@ -633,6 +694,133 @@ def get_schedule(
         max_power_kw,
         battery_capacity_kwh,
     )
+
+    # ── Replay the final limits to get the delivered SoC / energy / cost ──────
+    max_w = int(round(max_power_kw * 1000))
+    soc = initial_soc
+    hours: list[dict] = []
+
+    for h, ctx in enumerate(context):
+        limit_w = periods[h]["limit"]
+        rate = (limit_w / max_w) if max_w > 0 else 0.0
+        soc_start = soc
+        soc_end = min(1.0, soc_start + rate * max_power_kw / battery_capacity_kwh)
+        energy_kwh = (soc_end - soc_start) * battery_capacity_kwh
+
+        hours.append(
+            {
+                "t": ctx["t"].isoformat(),
+                "hour": h,
+                "price_eur_kwh": round(ctx["price"], 6),
+                "price_3h_eur_kwh": round(ctx["price_3h"], 6),
+                "temp_c": round(ctx["temp"], 2),
+                "radiation_wm2": round(ctx["rad"], 1),
+                "sunshine_s": round(ctx["sun"], 1),
+                "holiday": bool(ctx["holiday"]),
+                "rate": round(rate, 4),
+                "limit_w": limit_w,
+                "soc_start": round(soc_start, 4),
+                "soc_end": round(soc_end, 4),
+                "energy_kwh": round(energy_kwh, 4),
+                "cost_eur": round(energy_kwh * ctx["price"], 4),
+                "forced": limit_w > model_limits[h],
+                "before_departure": h < dep_hour,
+            }
+        )
+        soc = soc_end
+
+    projected_soc = hours[dep_hour - 1]["soc_end"] if dep_hour > 0 else initial_soc
+
+    return {
+        "periods": periods,
+        "hours": hours,
+        "max_power_kw": max_power_kw,
+        "dep_hour": dep_hour,
+        "projected_soc": projected_soc,
+        "soc_target_met": projected_soc >= target_soc - _SOC_TOLERANCE,
+        "prices": prices,
+        "weather_ok": not weather.empty,
+    }
+
+
+def _parse_now_and_departure(departure_time: str | None) -> tuple[datetime, datetime]:
+    """Resolves the schedule start and departure timestamps.
+
+    Args:
+        departure_time: ISO 8601 datetime, or ``None`` to default to
+            ``now + SCHEDULE_HOURS`` hours.
+
+    Returns:
+        tuple[datetime, datetime]: ``(now, departure)``, both naive UTC,
+        with ``now`` truncated to the hour.
+    """
+    now = datetime.now(timezone.utc).replace(
+        tzinfo=None, minute=0, second=0, microsecond=0
+    )
+
+    if departure_time:
+        dep = pd.to_datetime(departure_time)
+        if dep.tzinfo is not None:
+            dep = dep.tz_convert(None)
+        dep = dep.to_pydatetime().replace(tzinfo=None)
+    else:
+        dep = now + timedelta(hours=SCHEDULE_HOURS)
+
+    return now, dep
+
+
+# ── Endpoints ──────────────────────────────────────────────────────────────────
+
+
+@app.get("/schedule")
+def get_schedule(
+    station_id: str = Query(..., description="OCPP station ID"),
+    evse_id: int = Query(..., description="OCPP EVSE ID (integer)"),
+    desired_soc: float = Query(default=0.8, ge=0.0, le=1.0),
+    departure_time: str | None = Query(default=None),
+    current_soc: float = Query(default=0.2, ge=0.0, le=1.0),
+    battery_capacity_kwh: float = Query(default=BATTERY_CAPACITY_KWH, gt=0.0),
+    user_id: str | None = Query(default=None),
+):
+    """Returns a 24-hour OCPP charging schedule for one EVSE.
+
+    Thin wrapper over :func:`compute_schedule`: runs the SAC model over
+    the next 24 hours of price/weather data, applies the SoC guarantee,
+    and formats the result as an OCPP 2.0.1 profile. See the module
+    docstring for the full request/response contract.
+
+    Args:
+        station_id: OCPP station identifier.
+        evse_id: OCPP EVSE identifier.
+        desired_soc: Target state of charge at departure, ``[0, 1]``.
+        departure_time: ISO 8601 datetime; defaults to
+            ``now + SCHEDULE_HOURS`` hours if omitted.
+        current_soc: Current battery state of charge, ``[0, 1]``.
+        battery_capacity_kwh: Battery capacity in kWh.
+        user_id: Optional Keycloak user ID; accepted but not currently
+            used to vary the schedule.
+
+    Returns:
+        dict: An OCPP 2.0.1 ``chargingProfile`` payload, as described in
+        the module docstring.
+
+    Raises:
+        HTTPException: 503 if spot price data can't be loaded.
+    """
+    now, dep = _parse_now_and_departure(departure_time)
+
+    try:
+        schedule = compute_schedule(
+            station_id,
+            evse_id,
+            current_soc,
+            desired_soc,
+            dep,
+            now,
+            battery_capacity_kwh,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     profile_id = abs(hash(f"{station_id}:{evse_id}:{now.date()}")) % 2_000_000 + 1
 
@@ -646,11 +834,105 @@ def get_schedule(
                 {
                     "id": profile_id,
                     "chargingRateUnit": "W",
-                    "chargingSchedulePeriod": periods,
+                    "chargingSchedulePeriod": schedule["periods"],
                 }
             ],
         }
     }
+
+
+@app.get("/api/dashboard")
+def get_dashboard_data(
+    station_id: str = Query(default=DASHBOARD_STATION_ID),
+    evse_id: int = Query(default=DASHBOARD_EVSE_ID),
+    desired_soc: float = Query(default=0.8, ge=0.0, le=1.0),
+    departure_time: str | None = Query(default=None),
+    current_soc: float = Query(default=0.2, ge=0.0, le=1.0),
+    battery_capacity_kwh: float = Query(default=BATTERY_CAPACITY_KWH, gt=0.0),
+    history_hours: int = Query(default=dashboard.HISTORY_HOURS, ge=1, le=168),
+):
+    """Returns everything the operations dashboard renders.
+
+    Combines the forward-looking schedule from :func:`compute_schedule`
+    with the measured history read from the citrine DB. A database
+    outage is not fatal: the actuals come back empty, a warning is added,
+    and the forecast half of the page renders normally.
+
+    Args:
+        station_id: OCPP station identifier; defaults to the
+            ``DASHBOARD_STATION_ID`` env var.
+        evse_id: OCPP EVSE identifier; defaults to the
+            ``DASHBOARD_EVSE_ID`` env var.
+        desired_soc: Target state of charge at departure, ``[0, 1]``.
+        departure_time: ISO 8601 datetime; defaults to
+            ``now + SCHEDULE_HOURS`` hours if omitted.
+        current_soc: Current battery state of charge, ``[0, 1]``.
+        battery_capacity_kwh: Battery capacity in kWh.
+        history_hours: How many past hours of measured data to include.
+
+    Returns:
+        dict: The dashboard payload built by
+        :func:`dashboard.build_payload`.
+
+    Raises:
+        HTTPException: 503 if spot price data can't be loaded.
+    """
+    now, dep = _parse_now_and_departure(departure_time)
+
+    try:
+        schedule = compute_schedule(
+            station_id,
+            evse_id,
+            current_soc,
+            desired_soc,
+            dep,
+            now,
+            battery_capacity_kwh,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    warnings: list[str] = []
+    since = now - timedelta(hours=history_hours)
+
+    try:
+        actual_rows = dashboard.fetch_actuals_cached(_DB, station_id, since, now)
+        sessions = dashboard.fetch_recent_sessions(_DB, station_id)
+        db_status = "ok"
+    except dashboard.DashboardDataError as exc:
+        actual_rows, sessions = [], []
+        db_status = "unavailable"
+        warnings.append(f"database_unreachable: {exc}")
+
+    if not schedule["weather_ok"]:
+        warnings.append("weather_unavailable")
+
+    actual_series = dashboard.build_actual_series(
+        actual_rows,
+        since,
+        history_hours,
+        lambda t: _lookup_opt(schedule["prices"], t, "price"),
+    )
+
+    return dashboard.build_payload(
+        station_id=station_id,
+        evse_id=evse_id,
+        schedule=schedule,
+        actual_series=actual_series,
+        sessions=sessions,
+        model_path=str(_model_path),
+        now=now,
+        departure=dep,
+        current_soc=float(np.clip(current_soc, 0.0, 1.0)),
+        target_soc=float(np.clip(desired_soc, 0.0, 1.0)),
+        battery_capacity_kwh=battery_capacity_kwh,
+        data_sources={
+            "prices": _prices_cache.get("source") or "unknown",
+            "weather": "ok" if schedule["weather_ok"] else "unavailable",
+            "db": db_status,
+        },
+        warnings=warnings,
+    )
 
 
 @app.get("/health")

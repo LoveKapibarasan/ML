@@ -25,11 +25,15 @@ citrine DB (OCPP 2.0.1)          ENTSO-E API          Open-Meteo API
                       │
                   serve.py  (FastAPI, port 8000)
                       │
-         GET /schedule?station_id=…&evse_id=…
-                      │
-         citrineos-payment  →  SetChargingProfile (OCPP)
-                      │
-              EV charger (CitrineOS)
+        ┌─────────────┴─────────────┐
+        │                           │
+GET /schedule?station_id=…   GET /api/dashboard?…
+        │                           │
+citrineos-payment                dashboard_app.py
+        │                        (Streamlit, port 8501)
+SetChargingProfile (OCPP)           │
+        │                      operator's browser
+  EV charger (CitrineOS)
 ```
 
 ---
@@ -170,7 +174,70 @@ GET /schedule
 
 GET /health
 → { "status": "healthy", "model": "<path>", "max_power_kw": <float> }
+
+GET /api/dashboard
+  ?station_id=<str>            default DASHBOARD_STATION_ID
+  &evse_id=<int>               default DASHBOARD_EVSE_ID
+  [&desired_soc=<float>]       default 0.8
+  [&departure_time=<ISO8601>]  default now+24h
+  [&current_soc=<float>]       default 0.2
+  [&history_hours=<int>]       default 24
+
+→ { "kpi": {…}, "forecast": [24 rows], "actuals": [N rows],
+    "sessions": […], "data_sources": {…}, "warnings": […] }
 ```
+
+`/api/dashboard` runs the *same* `compute_schedule()` as `/schedule`, then adds
+the per-hour context that produced it (price, weather, SoC trajectory, which
+hours the SoC guarantee force-filled) and the measured history from the citrine
+DB.  The dashboard therefore cannot drift from the schedule the charger is
+actually given.
+
+---
+
+## Operations Dashboard (dashboard_app.py)
+
+A Streamlit app that runs as its own process and reads `/api/dashboard` over
+HTTP.  Measured history and forecast share one time axis:
+
+| Panel | Shows |
+|---|---|
+| Stat tiles | Current SoC, EVSE max power, price now, projected SoC at departure (target met / missed), planned cost vs always-on, measured cost |
+| Spot price | Day-ahead price for the whole window, stepped hourly, with negative-price hours tinted |
+| Charging power | Measured kW (past) vs planned kW (next 24 h), with SoC-guarantee force-fills marked |
+| State of charge | Projected trajectory against the target line and departure time |
+| Weather | Temperature and irradiance — the model's own inputs |
+| Tables | Recent sessions, and an hourly table view of every chart |
+
+The UI is available in **English and Japanese** (sidebar toggle).  Chart colours
+are validated for colour-vision deficiency against both the light and dark
+Streamlit surfaces, and the series are distinguished by position and legend as
+well as hue.
+
+```bash
+./scripts/dashboard.sh start    # start in background (PID in .dashboard.pid)
+./scripts/dashboard.sh stop
+./scripts/dashboard.sh restart
+./scripts/dashboard.sh status
+./scripts/dashboard.sh logs     # tail -f dashboard.log
+```
+
+Or directly:
+
+```bash
+SERVE_URL=http://127.0.0.1:8000 streamlit run dashboard_app.py --server.port 8501
+```
+
+| Variable | Default | Description |
+|---|---|---|
+| `SERVE_URL` | `http://127.0.0.1:8000` | Inference server the dashboard reads |
+| `DASHBOARD_HOST` | `0.0.0.0` | Bind address |
+| `DASHBOARD_PORT` | `8501` | Dashboard port |
+| `DASHBOARD_STATION_ID` | `cp001` | Station pre-filled in the sidebar |
+| `DASHBOARD_EVSE_ID` | `1` | EVSE pre-filled in the sidebar |
+
+If the citrine DB is unreachable the dashboard still renders: the measured
+panels come back empty with a warning banner, and the forecast is unaffected.
 
 ---
 
@@ -192,12 +259,15 @@ ML/
 ├── benchmark_results/       # Benchmark plots and summary CSV — git-ignored
 ├── sac_ev_logs/             # TensorBoard training logs — git-ignored
 ├── train.py                 # SAC training entry point
-├── test.py                  # Quick backtest + price-vs-SoC chart
+├── scripts/backtest.py      # Quick backtest + price-vs-SoC chart
 ├── benchmark.py             # Full benchmark: SAC vs 3 baseline strategies
 ├── serve.py                 # FastAPI inference server (SMARTCHARGING_ENDPOINT)
-├── run_pipeline.sh          # One-shot: fetch data → preprocess → train
-├── serve.sh                 # Service manager (start/stop/restart/status/logs)
-├── install_service.sh       # Register serve.py as a systemd service
+├── dashboard.py             # Dashboard data layer: citrine history + payload
+├── dashboard_app.py         # Streamlit operations dashboard (port 8501)
+├── scripts/run_pipeline.sh  # One-shot: fetch data → preprocess → train
+├── scripts/serve.sh         # Service manager (start/stop/restart/status/logs)
+├── scripts/dashboard.sh     # Dashboard service manager
+├── scripts/install_service.sh # Register serve.py as a systemd service
 ├── .env                     # Secrets — git-ignored
 └── .env.example             # Template — commit this, not .env
 ```
@@ -234,6 +304,10 @@ cp .env.example .env
 | `WEATHER_LON` | no | Site longitude (default `13.41` Berlin) |
 | `SERVE_PORT` | no | Inference server port (default `8000`) |
 | `MODEL_PATH` | no | Override model path (default `models/best_model`) |
+| `SERVE_URL` | no | Inference server the dashboard reads (default `http://127.0.0.1:8000`) |
+| `DASHBOARD_PORT` | no | Dashboard port (default `8501`) |
+| `DASHBOARD_STATION_ID` | no | Station pre-filled in the dashboard (default `cp001`) |
+| `DASHBOARD_EVSE_ID` | no | EVSE pre-filled in the dashboard (default `1`) |
 
 ---
 
@@ -242,7 +316,7 @@ cp .env.example .env
 ### Option A — One-shot script
 
 ```bash
-./run_pipeline.sh
+./scripts/run_pipeline.sh
 # Fetches all data, preprocesses, and trains in sequence.
 ```
 
@@ -308,17 +382,17 @@ python benchmark.py
 **Option A – foreground / manual**
 
 ```bash
-./serve.sh start    # start in background (PID saved to .serve.pid)
-./serve.sh stop     # graceful stop
-./serve.sh restart  # stop + start
-./serve.sh status   # show PID and URL
-./serve.sh logs     # tail -f serve.log
+./scripts/serve.sh start    # start in background (PID saved to .serve.pid)
+./scripts/serve.sh stop     # graceful stop
+./scripts/serve.sh restart  # stop + start
+./scripts/serve.sh status   # show PID and URL
+./scripts/serve.sh logs     # tail -f serve.log
 ```
 
 **Option B – systemd service (auto-start on boot)**
 
 ```bash
-sudo ./install_service.sh
+sudo ./scripts/install_service.sh
 # Generates /etc/systemd/system/sac-charging.service from the current directory,
 # enables it, and starts it immediately.
 
@@ -330,6 +404,15 @@ journalctl -u     sac-charging -f   # live logs
 
 Then set `SMARTCHARGING_ENDPOINT=http://<this-host>:8000/schedule` in
 `citrineos-payment`'s `.env`.
+
+#### 7. Start the operations dashboard
+
+```bash
+./scripts/dashboard.sh start
+# → http://<this-host>:8501
+```
+
+It reads the inference server started in step 6, so start that first.
 
 ---
 
