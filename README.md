@@ -175,8 +175,8 @@ GET /schedule
 GET /health
 → { "status": "healthy", "model": "<path>", "max_power_kw": <float> }
 
-GET /api/dashboard
-  ?station_id=<str>            default DASHBOARD_STATION_ID
+GET /api/dashboard            Authorization: Bearer <DASHBOARD_API_TOKEN>
+  ?station_id=<str>            default DASHBOARD_STATION_ID (required)
   &evse_id=<int>               default DASHBOARD_EVSE_ID
   [&desired_soc=<float>]       default 0.8
   [&departure_time=<ISO8601>]  default now+24h
@@ -186,6 +186,12 @@ GET /api/dashboard
 → { "kpi": {…}, "forecast": [24 rows], "actuals": [N rows],
     "sessions": […], "data_sources": {…}, "warnings": […] }
 ```
+
+`/api/dashboard` requires `DASHBOARD_API_TOKEN` as a bearer token — it returns
+the same operational data as the UI, so it is not left open on the public port.
+It **fails closed**: with no token configured on the server the endpoint returns
+503 rather than serving anonymously.  `/schedule` is deliberately *not* gated —
+citrineos-payment polls it unauthenticated.
 
 `/api/dashboard` runs the *same* `compute_schedule()` as `/schedule`, then adds
 the per-hour context that produced it (price, weather, SoC trajectory, which
@@ -209,10 +215,30 @@ HTTP.  Measured history and forecast share one time axis:
 | Weather | Temperature and irradiance — the model's own inputs |
 | Tables | Recent sessions, and an hourly table view of every chart |
 
-The UI is available in **English and Japanese** (sidebar toggle).  Chart colours
+The UI is available in **English, Japanese and German** (sidebar dropdown).  Chart colours
 are validated for colour-vision deficiency against both the light and dark
 Streamlit surfaces, and the series are distinguished by position and legend as
 well as hue.
+
+### Authentication
+
+The dashboard is gated by **Keycloak** — the `AI-Charge-Technologies` realm at
+`https://login.ai-charge.net`, the same one the operator tools use — through
+Streamlit's native OIDC support.
+
+`scripts/dashboard.sh` writes `.streamlit/secrets.toml` (git-ignored, mode 600)
+at startup, reading `KEYCLOAK_CLIENT_ID` / `KEYCLOAK_CLIENT_SECRET` from
+Infisical (`citrineos` project, `/ops-tool`) or from the environment.  No client
+secret is ever committed.
+
+It **fails closed**: with no provider configured the dashboard refuses to render.
+`DASHBOARD_ALLOW_ANONYMOUS=1` bypasses this **for local development only** and
+shows a persistent warning banner.
+
+> The Keycloak client must have the dashboard's
+> `<DASHBOARD_PUBLIC_URL>/oauth2callback` registered as a valid redirect URI, or
+> Keycloak answers `Invalid parameter: redirect_uri`.  This is a realm-admin
+> step, done once per deployment URL.
 
 ```bash
 ./scripts/dashboard.sh start    # start in background (PID in .dashboard.pid)
@@ -233,8 +259,14 @@ SERVE_URL=http://127.0.0.1:8000 streamlit run dashboard_app.py --server.port 850
 | `SERVE_URL` | `http://127.0.0.1:8000` | Inference server the dashboard reads |
 | `DASHBOARD_HOST` | `0.0.0.0` | Bind address |
 | `DASHBOARD_PORT` | `8501` | Dashboard port |
-| `DASHBOARD_STATION_ID` | `cp001` | Station pre-filled in the sidebar |
+| `DASHBOARD_STATION_ID` | *(none)* | Station pre-filled in the sidebar |
 | `DASHBOARD_EVSE_ID` | `1` | EVSE pre-filled in the sidebar |
+| `DASHBOARD_API_TOKEN` | *(none)* | Shared bearer token for `/api/dashboard` |
+| `DASHBOARD_PUBLIC_URL` | `http://$HOST:$PORT` | Base URL used for the OIDC redirect |
+| `KEYCLOAK_URL` | `https://login.ai-charge.net` | Keycloak base URL |
+| `KEYCLOAK_REALM` | `AI-Charge-Technologies` | Keycloak realm |
+| `KEYCLOAK_CLIENT_ID` / `_SECRET` | *(Infisical)* | OIDC client credentials |
+| `DASHBOARD_ALLOW_ANONYMOUS` | *(unset)* | `1` disables auth — local development only |
 
 If the citrine DB is unreachable the dashboard still renders: the measured
 panels come back empty with a warning banner, and the forecast is unaffected.
@@ -264,6 +296,7 @@ ML/
 ├── serve.py                 # FastAPI inference server (SMARTCHARGING_ENDPOINT)
 ├── dashboard.py             # Dashboard data layer: citrine history + payload
 ├── dashboard_app.py         # Streamlit operations dashboard (port 8501)
+├── assets/                  # Brand favicon (PNG / ICO) used by the dashboard
 ├── scripts/run_pipeline.sh  # One-shot: fetch data → preprocess → train
 ├── scripts/serve.sh         # Service manager (start/stop/restart/status/logs)
 ├── scripts/dashboard.sh     # Dashboard service manager
@@ -306,8 +339,11 @@ cp .env.example .env
 | `MODEL_PATH` | no | Override model path (default `models/best_model`) |
 | `SERVE_URL` | no | Inference server the dashboard reads (default `http://127.0.0.1:8000`) |
 | `DASHBOARD_PORT` | no | Dashboard port (default `8501`) |
-| `DASHBOARD_STATION_ID` | no | Station pre-filled in the dashboard (default `cp001`) |
+| `DASHBOARD_STATION_ID` | no | Station pre-filled in the dashboard |
 | `DASHBOARD_EVSE_ID` | no | EVSE pre-filled in the dashboard (default `1`) |
+| `DASHBOARD_API_TOKEN` | **yes** | Bearer token gating `/api/dashboard` |
+| `KEYCLOAK_CLIENT_ID` | **yes** | OIDC client for the dashboard (or via Infisical) |
+| `KEYCLOAK_CLIENT_SECRET` | **yes** | OIDC client secret (or via Infisical) |
 
 ---
 
@@ -448,6 +484,8 @@ schedule alone would fall short.
 
 - **Battery capacity**: 50 kWh — configurable in `EVChargingEnv`.
 
-- **Station**: `cp001` (EVerest / CitrineOS OCPP 2.0.1 charger).
+- **Stations**: the station IDs live in the citrine DB (`Transactions.stationId`);
+  set the one you want pre-filled via `DASHBOARD_STATION_ID`.  There is no
+  built-in default — an empty `station_id` returns 422 rather than an empty page.
 
 - **Training time**: ~3 h for 500 k steps on RTX 3050.

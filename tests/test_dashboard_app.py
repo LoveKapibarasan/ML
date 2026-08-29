@@ -121,7 +121,9 @@ def test_translation_placeholders_match_across_languages():
 
 def test_tr_substitutes_and_falls_back_to_english():
     assert dashboard_app.tr("ja", "d_target", v="80%") == "目標 80%"
-    assert dashboard_app.tr("de", "now_line") == dashboard_app.I18N["en"]["now_line"]
+    assert dashboard_app.tr("de", "now_line") == "jetzt"
+    # An unsupported code falls back to English rather than raising.
+    assert dashboard_app.tr("fr", "now_line") == dashboard_app.I18N["en"]["now_line"]
 
 
 # ── Charts ─────────────────────────────────────────────────────────────────────
@@ -160,3 +162,72 @@ def test_power_chart_labels_all_three_series_in_the_legend():
     ]
     # Forced-fill shares the planned hue, so opacity carries the difference.
     assert "opacity" in bars["encoding"]
+
+
+# ── Languages ──────────────────────────────────────────────────────────────────
+
+
+def test_all_three_languages_are_offered():
+    assert dashboard_app.LANGUAGES == {
+        "English": "en",
+        "日本語": "ja",
+        "Deutsch": "de",
+    }
+    # Every offered label must resolve to a table that actually exists.
+    assert set(dashboard_app.LANGUAGES.values()) == set(dashboard_app.I18N)
+
+
+def test_german_translates_the_operational_vocabulary():
+    de = dashboard_app.I18N["de"]
+
+    assert de["chart_power"] == "Ladeleistung (kW)"
+    assert de["s_forced"] == "Zwangsladung (SoC-Garantie)"
+    assert de["auth_sign_in"] == "Mit Keycloak anmelden"
+    # Units and loanwords are identical in German; anything else matching
+    # the English string means a key was left untranslated by accident.
+    SAME_IN_GERMAN = {
+        "d_energy",  # "{v} kWh"
+        "src_live",  # "live"
+        "src_ok",  # "ok"
+        "c_soc",  # "SoC %"
+        "c_phase",  # "Phase"
+        "c_kwh",  # "kWh"
+    }
+    untranslated = [
+        k
+        for k, v in de.items()
+        if v == dashboard_app.I18N["en"][k] and k not in SAME_IN_GERMAN
+    ]
+    assert untranslated == [], untranslated
+
+
+# ── Authentication ─────────────────────────────────────────────────────────────
+
+
+def test_auth_is_reported_unconfigured_when_no_provider_is_present(monkeypatch):
+    monkeypatch.setattr(dashboard_app.st, "secrets", {}, raising=False)
+
+    assert dashboard_app.auth_configured() is False
+
+
+def test_auth_is_reported_configured_when_the_provider_is_present(monkeypatch):
+    monkeypatch.setattr(
+        dashboard_app.st,
+        "secrets",
+        {"auth": {"keycloak": {"client_id": "x"}}},
+        raising=False,
+    )
+
+    assert dashboard_app.auth_configured() is True
+
+
+def test_auth_helpers_do_not_crash_on_an_unreadable_secrets_store(monkeypatch):
+    """Streamlit raises if no secrets file exists; that must read as 'off'."""
+
+    class Exploding:
+        def __contains__(self, key):
+            raise FileNotFoundError("no secrets.toml")
+
+    monkeypatch.setattr(dashboard_app.st, "secrets", Exploding(), raising=False)
+
+    assert dashboard_app.auth_configured() is False

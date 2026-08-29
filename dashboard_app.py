@@ -6,6 +6,13 @@ dashboard can never drift from the schedule the charger is actually
 given. Point it at another host with the ``SERVE_URL`` environment
 variable.
 
+Access is gated by Keycloak (the ``AI-Charge-Technologies`` realm, the
+same one the operator tools use) via Streamlit's native OIDC support.
+The realm credentials are written to ``.streamlit/secrets.toml`` at
+startup by ``scripts/dashboard.sh``, which reads them from Infisical —
+they are never committed. Calls to ``/api/dashboard`` additionally carry
+``DASHBOARD_API_TOKEN`` as a bearer token.
+
 Run it with::
 
     streamlit run dashboard_app.py --server.port 8501
@@ -15,6 +22,7 @@ or via ``scripts/dashboard.sh start``.
 
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import altair as alt
 import pandas as pd
@@ -27,6 +35,12 @@ import dashboard
 load_dotenv()
 
 SERVE_URL = os.getenv("SERVE_URL", "http://127.0.0.1:8000").rstrip("/")
+ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+PAGE_ICON = ASSETS_DIR / "favicon-32.png"
+API_TOKEN = os.getenv("DASHBOARD_API_TOKEN", "")
+# Escape hatch for local development only; the deployed service leaves it unset.
+ALLOW_ANONYMOUS = os.getenv("DASHBOARD_ALLOW_ANONYMOUS", "") == "1"
+AUTH_PROVIDER = os.getenv("DASHBOARD_AUTH_PROVIDER", "keycloak")
 REQUEST_TIMEOUT_S = 30
 
 # ── Palette ───────────────────────────────────────────────────────────────────
@@ -121,6 +135,12 @@ I18N = {
         "c_state": "State",
         "c_temp": "Temperature °C",
         "c_rad": "Irradiance W/m²",
+        "auth_required": "Sign in with your AI-Charge account to view the dashboard.",
+        "auth_sign_in": "Sign in with Keycloak",
+        "auth_sign_out": "Sign out",
+        "auth_signed_in": "Signed in as {v}",
+        "auth_unconfigured": "Authentication is not configured, so the dashboard will not start. Provide the Keycloak settings in .streamlit/secrets.toml (scripts/dashboard.sh writes them from Infisical).",
+        "auth_anonymous": "Running without authentication (DASHBOARD_ALLOW_ANONYMOUS=1). Never use this outside local development.",
     },
     "ja": {
         "page_title": "EV スマート充電",
@@ -190,10 +210,91 @@ I18N = {
         "c_state": "状態",
         "c_temp": "気温 °C",
         "c_rad": "日射量 W/m²",
+        "auth_required": "ダッシュボードを表示するには AI-Charge アカウントでサインインしてください。",
+        "auth_sign_in": "Keycloak でサインイン",
+        "auth_sign_out": "サインアウト",
+        "auth_signed_in": "{v} としてサインイン中",
+        "auth_unconfigured": "認証が未設定のためダッシュボードを起動できません。Keycloak の設定を .streamlit/secrets.toml に用意してください（scripts/dashboard.sh が Infisical から書き出します）。",
+        "auth_anonymous": "認証なしで動作しています（DASHBOARD_ALLOW_ANONYMOUS=1）。ローカル開発以外では使用しないでください。",
+    },
+    "de": {
+        "page_title": "EV-Smart-Charging",
+        "title": "EV-Smart-Charging — Betrieb",
+        "settings": "Einstellungen",
+        "language": "Sprache",
+        "station": "Ladepunkt-ID",
+        "evse": "EVSE-ID",
+        "current_soc": "Aktueller SoC",
+        "target_soc": "Ziel-SoC",
+        "departure": "Abfahrt (UTC)",
+        "history": "Verlauf (Stunden)",
+        "auto_refresh": "Alle 60 s aktualisieren",
+        "refresh_now": "Jetzt aktualisieren",
+        "k_soc": "Aktueller SoC",
+        "k_power": "Maximale Leistung",
+        "k_price": "Preis jetzt",
+        "k_projected": "SoC bei Abfahrt",
+        "k_planned_cost": "Geplante Kosten",
+        "k_measured_cost": "Gemessene Kosten",
+        "d_target": "Ziel {v}",
+        "d_battery": "Batterie {v} kWh",
+        "d_avg": "geplanter Schnitt {v}",
+        "d_met": "Ziel erreicht",
+        "d_missed": "Ziel verfehlt",
+        "d_energy": "{v} kWh",
+        "d_vs_baseline": "{v} ggü. Dauerladen",
+        "d_unpriced": "{v} kWh ohne Preis",
+        "d_departs": "Abfahrt in {v} h",
+        "chart_price": "Börsenstrompreis (€/kWh)",
+        "chart_power": "Ladeleistung (kW)",
+        "chart_soc": "Ladezustand (SoC)",
+        "chart_weather": "Wettervorhersage (Modelleingaben)",
+        "soc_caption": "Nur Prognose — OCPP meldet den Fahrzeug-SoC nicht.",
+        "sessions": "Letzte Ladevorgänge",
+        "hourly": "Stundenwerte",
+        "no_sessions": "Für diesen Ladepunkt sind keine Ladevorgänge erfasst.",
+        "legend": "Reihen",
+        "s_measured": "Gemessen (Vergangenheit)",
+        "s_planned": "Geplant (SAC)",
+        "s_forced": "Zwangsladung (SoC-Garantie)",
+        "negative_hours": "Stunden mit negativem Preis",
+        "target_line": "Ziel {v}",
+        "now_line": "jetzt",
+        "departure_line": "Abfahrt",
+        "err_db": "Datenbank nicht erreichbar — gemessener Verlauf und Ladevorgänge sind nicht verfügbar. Die Prognose ist davon nicht betroffen.",
+        "err_weather": "Wetter-API nicht erreichbar — das Modell arbeitet mit Ersatzwerten.",
+        "err_fetch": "Inferenzserver unter {url} nicht erreichbar: {err}",
+        "err_api": "Der Inferenzserver antwortete mit {code}: {detail}",
+        "sources": "Preise: **{p}** · Wetter: **{w}** · Datenbank: **{d}** · Modell: `{m}` · Erstellt {t} UTC",
+        "src_live": "live",
+        "src_csv": "CSV-Ersatz",
+        "src_stale": "veralteter Cache",
+        "src_ok": "ok",
+        "src_na": "nicht verfügbar",
+        "src_unknown": "unbekannt",
+        "c_hour": "Stunde (UTC)",
+        "c_price": "Preis €/kWh",
+        "c_power": "Leistung kW",
+        "c_soc": "SoC %",
+        "c_cost": "Kosten €",
+        "c_forced": "Zwang",
+        "c_phase": "Phase",
+        "c_start": "Beginn",
+        "c_end": "Ende",
+        "c_kwh": "kWh",
+        "c_state": "Status",
+        "c_temp": "Temperatur °C",
+        "c_rad": "Einstrahlung W/m²",
+        "auth_required": "Melden Sie sich mit Ihrem AI-Charge-Konto an, um das Dashboard zu sehen.",
+        "auth_sign_in": "Mit Keycloak anmelden",
+        "auth_sign_out": "Abmelden",
+        "auth_signed_in": "Angemeldet als {v}",
+        "auth_unconfigured": "Die Authentifizierung ist nicht konfiguriert, daher startet das Dashboard nicht. Hinterlegen Sie die Keycloak-Einstellungen in .streamlit/secrets.toml (scripts/dashboard.sh schreibt sie aus Infisical).",
+        "auth_anonymous": "Läuft ohne Authentifizierung (DASHBOARD_ALLOW_ANONYMOUS=1). Außerhalb der lokalen Entwicklung niemals verwenden.",
     },
 }
 
-LANGUAGES = {"English": "en", "日本語": "ja"}
+LANGUAGES = {"English": "en", "日本語": "ja", "Deutsch": "de"}
 
 
 def tr(lang: str, key: str, **kwargs) -> str:
@@ -209,6 +310,75 @@ def tr(lang: str, key: str, **kwargs) -> str:
     """
     text = I18N.get(lang, I18N["en"]).get(key) or I18N["en"][key]
     return text.format(**kwargs) if kwargs else text
+
+
+# ── Authentication ────────────────────────────────────────────────────────────
+
+
+def auth_configured() -> bool:
+    """Reports whether an OIDC provider is configured for this app.
+
+    Streamlit reads the provider from the ``[auth]`` section of
+    ``.streamlit/secrets.toml``, which ``scripts/dashboard.sh`` writes
+    from Infisical at startup.
+
+    Returns:
+        bool: ``True`` if ``st.login`` can be called.
+    """
+    try:
+        return "auth" in st.secrets and AUTH_PROVIDER in st.secrets["auth"]
+    except Exception:
+        return False
+
+
+def require_login(lang: str) -> bool:
+    """Gates the page on a Keycloak session.
+
+    Fails closed: with no provider configured the dashboard refuses to
+    render rather than serving operational data anonymously. Set
+    ``DASHBOARD_ALLOW_ANONYMOUS=1`` to bypass this for local development
+    only.
+
+    Args:
+        lang: Active language code, for the sign-in copy.
+
+    Returns:
+        bool: ``True`` when the caller may see the dashboard.
+    """
+    if ALLOW_ANONYMOUS:
+        st.warning(tr(lang, "auth_anonymous"), icon="⚠️")
+        return True
+
+    if not auth_configured():
+        st.error(tr(lang, "auth_unconfigured"), icon="🔒")
+        return False
+
+    if not st.user.is_logged_in:
+        st.title(tr(lang, "title"))
+        st.info(tr(lang, "auth_required"), icon="🔒")
+        st.button(
+            tr(lang, "auth_sign_in"),
+            type="primary",
+            on_click=st.login,
+            args=(AUTH_PROVIDER,),
+        )
+        return False
+
+    return True
+
+
+def account_controls(lang: str) -> None:
+    """Shows who is signed in, and a sign-out button, in the sidebar.
+
+    Args:
+        lang: Active language code.
+    """
+    if ALLOW_ANONYMOUS or not auth_configured():
+        return
+    with st.sidebar:
+        who = getattr(st.user, "name", None) or getattr(st.user, "email", None) or "?"
+        st.caption(tr(lang, "auth_signed_in", v=who))
+        st.button(tr(lang, "auth_sign_out"), on_click=st.logout)
 
 
 # ── Data ──────────────────────────────────────────────────────────────────────
@@ -229,8 +399,12 @@ def fetch_payload(params: tuple) -> dict:
         requests.HTTPError: If the server answers with an error status.
         requests.RequestException: If the server cannot be reached.
     """
+    headers = {"Authorization": f"Bearer {API_TOKEN}"} if API_TOKEN else {}
     response = requests.get(
-        f"{SERVE_URL}/api/dashboard", params=dict(params), timeout=REQUEST_TIMEOUT_S
+        f"{SERVE_URL}/api/dashboard",
+        params=dict(params),
+        headers=headers,
+        timeout=REQUEST_TIMEOUT_S,
     )
     response.raise_for_status()
     return response.json()
@@ -537,18 +711,25 @@ def sidebar() -> tuple[str, dict, bool]:
     """
     default_lang = st.session_state.get("lang", "en")
     with st.sidebar:
-        label = st.radio(
-            I18N[default_lang]["language"],
+        # Keying the widget means Streamlit restores its value *before* this
+        # line runs, so the control's own label is already in the newly
+        # chosen language rather than lagging one interaction behind.
+        chosen = st.session_state.get("lang_choice")
+        label_lang = LANGUAGES.get(chosen, default_lang)
+        # A dropdown rather than a radio row: the list grows with each
+        # language and a horizontal radio stops fitting the sidebar.
+        label = st.selectbox(
+            I18N[label_lang]["language"],
             list(LANGUAGES),
             index=list(LANGUAGES.values()).index(default_lang),
-            horizontal=True,
+            key="lang_choice",
         )
         lang = LANGUAGES[label]
         st.session_state["lang"] = lang
 
         st.header(tr(lang, "settings"))
         station_id = st.text_input(
-            tr(lang, "station"), value=os.getenv("DASHBOARD_STATION_ID", "cp001")
+            tr(lang, "station"), value=os.getenv("DASHBOARD_STATION_ID", "")
         )
         evse_id = st.number_input(
             tr(lang, "evse"),
@@ -760,8 +941,13 @@ def render(payload: dict, lang: str) -> None:
 
 
 def main() -> None:
-    """Entry point: renders the page and wires up auto-refresh."""
+    """Entry point: authenticates, then renders the page and auto-refresh."""
+    lang = st.session_state.get("lang", "en")
+    if not require_login(lang):
+        return
+
     lang, params, auto_refresh = sidebar()
+    account_controls(lang)
     st.title(tr(lang, "title"))
 
     @st.fragment(run_every=60 if auto_refresh else None)
@@ -789,7 +975,8 @@ def main() -> None:
 
 st.set_page_config(
     page_title=I18N[st.session_state.get("lang", "en")]["page_title"],
-    page_icon="⚡",
+    # The brand mark, committed under assets/ so nothing is fetched at runtime.
+    page_icon=str(PAGE_ICON) if PAGE_ICON.exists() else "⚡",
     layout="wide",
 )
 

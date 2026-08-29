@@ -82,6 +82,7 @@ API contract:
         {"status": "healthy", "model": "<path>", "max_power_kw": <float>}
 """
 
+import hmac
 import os
 import threading
 from datetime import datetime, timedelta, timezone
@@ -95,7 +96,7 @@ import psycopg2
 import requests_cache
 from dotenv import load_dotenv
 from entsoe import EntsoePandasClient
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query
 from retry_requests import retry
 from stable_baselines3 import SAC
 
@@ -110,8 +111,9 @@ WEATHER_LAT = float(os.getenv("WEATHER_LAT", "52.52"))
 WEATHER_LON = float(os.getenv("WEATHER_LON", "13.41"))
 INPUTS_DIR = Path(os.getenv("INPUTS_DIR", "inputs"))
 SCHEDULE_HOURS = 24
-DASHBOARD_STATION_ID = os.getenv("DASHBOARD_STATION_ID", "cp001")
+DASHBOARD_STATION_ID = os.getenv("DASHBOARD_STATION_ID", "")
 DASHBOARD_EVSE_ID = int(os.getenv("DASHBOARD_EVSE_ID", "1"))
+DASHBOARD_API_TOKEN = os.getenv("DASHBOARD_API_TOKEN", "")
 _CHARGE_THRESHOLD = 0.05
 _SOC_TOLERANCE = 0.02  # SoC within 2 % of target = "met"
 
@@ -769,6 +771,43 @@ def _parse_now_and_departure(departure_time: str | None) -> tuple[datetime, date
     return now, dep
 
 
+def _require_dashboard_token(authorization: str | None) -> None:
+    """Rejects a dashboard request that does not carry the shared token.
+
+    ``/api/dashboard`` returns the same operational data as the UI —
+    sessions, costs, station identifiers — so it is gated rather than
+    left open on the public port. This is service-to-service auth
+    between :mod:`dashboard_app` and this server; the human is
+    authenticated by Keycloak in front of the dashboard itself.
+
+    Fails closed: if the server has no token configured, the endpoint is
+    unavailable rather than open.
+
+    Args:
+        authorization: The request's ``Authorization`` header, if any.
+
+    Raises:
+        HTTPException: 503 if the server has no token configured, 401 if
+            the header is missing or does not match.
+    """
+    if not DASHBOARD_API_TOKEN:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "DASHBOARD_API_TOKEN is not configured on this server; "
+                "/api/dashboard is disabled"
+            ),
+        )
+    expected = f"Bearer {DASHBOARD_API_TOKEN}"
+    # Constant-time compare so the token cannot be recovered by timing.
+    if not authorization or not hmac.compare_digest(authorization, expected):
+        raise HTTPException(
+            status_code=401,
+            detail="Missing or invalid bearer token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 
 
@@ -850,6 +889,7 @@ def get_dashboard_data(
     current_soc: float = Query(default=0.2, ge=0.0, le=1.0),
     battery_capacity_kwh: float = Query(default=BATTERY_CAPACITY_KWH, gt=0.0),
     history_hours: int = Query(default=dashboard.HISTORY_HOURS, ge=1, le=168),
+    authorization: str | None = Header(default=None),
 ):
     """Returns everything the operations dashboard renders.
 
@@ -860,7 +900,8 @@ def get_dashboard_data(
 
     Args:
         station_id: OCPP station identifier; defaults to the
-            ``DASHBOARD_STATION_ID`` env var.
+            ``DASHBOARD_STATION_ID`` env var. Required — a 422 is
+            returned if neither is set.
         evse_id: OCPP EVSE identifier; defaults to the
             ``DASHBOARD_EVSE_ID`` env var.
         desired_soc: Target state of charge at departure, ``[0, 1]``.
@@ -869,14 +910,27 @@ def get_dashboard_data(
         current_soc: Current battery state of charge, ``[0, 1]``.
         battery_capacity_kwh: Battery capacity in kWh.
         history_hours: How many past hours of measured data to include.
+        authorization: ``Bearer <DASHBOARD_API_TOKEN>``; required.
 
     Returns:
         dict: The dashboard payload built by
         :func:`dashboard.build_payload`.
 
     Raises:
-        HTTPException: 503 if spot price data can't be loaded.
+        HTTPException: 401 without a valid bearer token, 422 if no
+            station is given, 503 if the server has no token configured
+            or spot price data can't be loaded.
     """
+    _require_dashboard_token(authorization)
+
+    if not station_id:
+        # An empty station queries nothing and would silently return an empty
+        # dashboard, so say what is missing instead.
+        raise HTTPException(
+            status_code=422,
+            detail="station_id is required (or set the DASHBOARD_STATION_ID env var)",
+        )
+
     now, dep = _parse_now_and_departure(departure_time)
 
     try:

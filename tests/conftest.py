@@ -27,8 +27,9 @@ def patch_runtime_dependencies(monkeypatch):
     network or a database.
 
     Yields:
-        dict: The ``prices`` and ``weather`` frames the server will see,
-        so a test can assert against the same numbers.
+        dict: The ``prices`` and ``weather`` frames the server will see
+        and the ``api_token`` ``/api/dashboard`` expects, so a test can
+        assert against the same values.
     """
     import dashboard
     import serve
@@ -57,6 +58,7 @@ def patch_runtime_dependencies(monkeypatch):
         index=price_index,
     )
 
+    monkeypatch.setattr(serve, "DASHBOARD_API_TOKEN", "test-token")
     monkeypatch.setattr(serve, "model", FakeModel())
     monkeypatch.setattr(serve, "_load_prices", lambda: prices)
     monkeypatch.setattr(serve, "_fetch_weather", lambda: weather)
@@ -64,4 +66,9 @@ def patch_runtime_dependencies(monkeypatch):
     monkeypatch.setattr(dashboard, "fetch_actuals_cached", lambda *_a, **_k: [])
     monkeypatch.setattr(dashboard, "fetch_recent_sessions", lambda *_a, **_k: [])
 
-    yield {"prices": prices, "weather": weather, "now": now}
+    yield {
+        "prices": prices,
+        "weather": weather,
+        "now": now,
+        "api_token": "test-token",
+    }

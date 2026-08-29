@@ -13,10 +13,14 @@ def _patched(patch_runtime_dependencies):
     return patch_runtime_dependencies
 
 
+AUTH = {"Authorization": "Bearer test-token"}
+
+
 def _get(client, **params):
     return client.get(
         "/api/dashboard",
         params={"station_id": "ACE0797425", "evse_id": 1, **params},
+        headers=AUTH,
     )
 
 
@@ -195,3 +199,60 @@ def test_dashboard_rejects_invalid_soc():
     client = TestClient(serve.app)
 
     assert _get(client, desired_soc=1.5).status_code == 422
+
+
+# ── Access control ─────────────────────────────────────────────────────────────
+
+
+def test_dashboard_api_rejects_a_request_without_a_token():
+    client = TestClient(serve.app)
+
+    response = client.get(
+        "/api/dashboard", params={"station_id": "ACE0797425", "evse_id": 1}
+    )
+
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"
+
+
+def test_dashboard_api_rejects_a_wrong_token():
+    client = TestClient(serve.app)
+
+    response = client.get(
+        "/api/dashboard",
+        params={"station_id": "ACE0797425", "evse_id": 1},
+        headers={"Authorization": "Bearer not-the-token"},
+    )
+
+    assert response.status_code == 401
+
+
+def test_dashboard_api_is_disabled_when_the_server_has_no_token(monkeypatch):
+    """Fails closed: an unconfigured server refuses rather than opens up."""
+    client = TestClient(serve.app)
+    monkeypatch.setattr(serve, "DASHBOARD_API_TOKEN", "")
+
+    response = _get(client)
+
+    assert response.status_code == 503
+    assert "DASHBOARD_API_TOKEN" in response.json()["detail"]
+
+
+def test_schedule_is_not_affected_by_the_dashboard_token():
+    """The OCPP contract citrineos-payment depends on stays unauthenticated."""
+    client = TestClient(serve.app)
+
+    response = client.get(
+        "/schedule", params={"station_id": "ACE0797425", "evse_id": 1}
+    )
+
+    assert response.status_code == 200
+
+
+def test_dashboard_requires_a_station():
+    client = TestClient(serve.app)
+
+    response = client.get("/api/dashboard", params={"evse_id": 1}, headers=AUTH)
+
+    assert response.status_code == 422
+    assert "station_id" in response.json()["detail"]

@@ -12,7 +12,7 @@ ruff
 gymnasium
 fastapi[standard]
 uvicorn[standard]
-streamlit
+streamlit[auth]
 altair
 requests
 psycopg2-binary
