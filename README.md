@@ -228,7 +228,8 @@ Streamlit's native OIDC support.
 
 `scripts/dashboard.sh` writes `.streamlit/secrets.toml` (git-ignored, mode 600)
 at startup, reading `KEYCLOAK_CLIENT_ID` / `KEYCLOAK_CLIENT_SECRET` from
-Infisical (`citrineos` project, `/ops-tool`) or from the environment.  No client
+Infisical (`citrineos` project, `prod` environment, `/ml` folder) or from the
+environment.  No client
 secret is ever committed.
 
 It **fails closed**: with no provider configured the dashboard refuses to render.

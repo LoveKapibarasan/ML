@@ -15,10 +15,12 @@ HOST="${DASHBOARD_HOST:-0.0.0.0}"
 PORT="${DASHBOARD_PORT:-8501}"
 export SERVE_URL="${SERVE_URL:-http://127.0.0.1:${SERVE_PORT:-8000}}"
 
-# Keycloak (same realm as the operator tools). Values come from Infisical.
+# Keycloak (same realm as the operator tools). Values come from Infisical:
+# citrineos project, prod environment, this service's own /ml folder.
 INFISICAL_PROJECT="${INFISICAL_PROJECT:-citrineos}"
-INFISICAL_ENV="${INFISICAL_ENV:-staging}"
-INFISICAL_PATH="${INFISICAL_PATH:-/ops-tool}"
+INFISICAL_PROJECT_ID="${INFISICAL_PROJECT_ID:-98538adb-d5d9-46f6-9920-8f66af3122f0}"
+INFISICAL_ENV="${INFISICAL_ENV:-prod}"
+INFISICAL_PATH="${INFISICAL_PATH:-/ml}"
 KEYCLOAK_URL="${KEYCLOAK_URL:-https://login.ai-charge.net}"
 KEYCLOAK_REALM="${KEYCLOAK_REALM:-AI-Charge-Technologies}"
 PUBLIC_URL="${DASHBOARD_PUBLIC_URL:-http://${HOST}:${PORT}}"
@@ -46,7 +48,7 @@ _write_secrets() {
 
     if [[ -z "$cid" || -z "$csec" ]] && command -v infisical >/dev/null 2>&1 \
        && [[ -n "${INFISICAL_CLIENT_ID:-}" && -n "${INFISICAL_CLIENT_SECRET:-}" ]]; then
-        echo "Reading Keycloak credentials from Infisical ($INFISICAL_ENV:$INFISICAL_PATH) ..."
+        echo "Reading Keycloak credentials from Infisical ($INFISICAL_PROJECT $INFISICAL_ENV:$INFISICAL_PATH) ..."
         local tok
         tok=$(infisical login --method=universal-auth \
                 --client-id="$INFISICAL_CLIENT_ID" \
@@ -54,10 +56,10 @@ _write_secrets() {
                 --domain="https://${INFISICAL_ENDPOINT}/api" --plain --silent) || true
         if [[ -n "$tok" ]]; then
             cid=$(INFISICAL_TOKEN="$tok" infisical secrets get KEYCLOAK_CLIENT_ID \
-                    --projectId="${INFISICAL_PROJECT_ID:-}" --env="$INFISICAL_ENV" \
+                    --projectId="$INFISICAL_PROJECT_ID" --env="$INFISICAL_ENV" \
                     --path="$INFISICAL_PATH" --plain --silent 2>/dev/null) || true
             csec=$(INFISICAL_TOKEN="$tok" infisical secrets get KEYCLOAK_CLIENT_SECRET \
-                    --projectId="${INFISICAL_PROJECT_ID:-}" --env="$INFISICAL_ENV" \
+                    --projectId="$INFISICAL_PROJECT_ID" --env="$INFISICAL_ENV" \
                     --path="$INFISICAL_PATH" --plain --silent 2>/dev/null) || true
         fi
     fi
@@ -66,7 +68,7 @@ _write_secrets() {
         echo "ERROR: no Keycloak credentials." >&2
         echo "  Set KEYCLOAK_CLIENT_ID / KEYCLOAK_CLIENT_SECRET, or provide" >&2
         echo "  INFISICAL_ENDPOINT / INFISICAL_CLIENT_ID / INFISICAL_CLIENT_SECRET" >&2
-        echo "  and INFISICAL_PROJECT_ID so they can be fetched." >&2
+        echo "  (INFISICAL_PROJECT_ID defaults to the citrineos project)." >&2
         echo "  For local development only: DASHBOARD_ALLOW_ANONYMOUS=1" >&2
         exit 1
     fi
