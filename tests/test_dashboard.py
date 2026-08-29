@@ -250,9 +250,17 @@ def test_schedule_is_not_affected_by_the_dashboard_token():
 
 
 def test_dashboard_requires_a_station():
+    """An explicitly empty station is refused, whatever the env default is.
+
+    FastAPI binds ``Query(default=DASHBOARD_STATION_ID)`` at import time,
+    so the value cannot be monkeypatched away — the test sends the empty
+    string directly instead of relying on the deployment's env.
+    """
     client = TestClient(serve.app)
 
-    response = client.get("/api/dashboard", params={"evse_id": 1}, headers=AUTH)
+    response = client.get(
+        "/api/dashboard", params={"station_id": "", "evse_id": 1}, headers=AUTH
+    )
 
     assert response.status_code == 422
     assert "station_id" in response.json()["detail"]
