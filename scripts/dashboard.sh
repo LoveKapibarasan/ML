@@ -49,18 +49,23 @@ _write_secrets() {
     if [[ -z "$cid" || -z "$csec" ]] && command -v infisical >/dev/null 2>&1 \
        && [[ -n "${INFISICAL_CLIENT_ID:-}" && -n "${INFISICAL_CLIENT_SECRET:-}" ]]; then
         echo "Reading Keycloak credentials from Infisical ($INFISICAL_PROJECT $INFISICAL_ENV:$INFISICAL_PATH) ..."
-        local tok
+        # --domain is needed on every subcommand, not just login: without it
+        # the CLI silently queries app.infisical.com instead of the self-hosted
+        # instance and fails with "invalid signature".
+        local domain="https://${INFISICAL_ENDPOINT}/api" tok
         tok=$(infisical login --method=universal-auth \
                 --client-id="$INFISICAL_CLIENT_ID" \
                 --client-secret="$INFISICAL_CLIENT_SECRET" \
-                --domain="https://${INFISICAL_ENDPOINT}/api" --plain --silent) || true
+                --domain="$domain" --plain --silent) || true
         if [[ -n "$tok" ]]; then
             cid=$(INFISICAL_TOKEN="$tok" infisical secrets get KEYCLOAK_CLIENT_ID \
-                    --projectId="$INFISICAL_PROJECT_ID" --env="$INFISICAL_ENV" \
-                    --path="$INFISICAL_PATH" --plain --silent 2>/dev/null) || true
+                    --domain="$domain" --projectId="$INFISICAL_PROJECT_ID" \
+                    --env="$INFISICAL_ENV" --path="$INFISICAL_PATH" \
+                    --plain --silent 2>/dev/null) || true
             csec=$(INFISICAL_TOKEN="$tok" infisical secrets get KEYCLOAK_CLIENT_SECRET \
-                    --projectId="$INFISICAL_PROJECT_ID" --env="$INFISICAL_ENV" \
-                    --path="$INFISICAL_PATH" --plain --silent 2>/dev/null) || true
+                    --domain="$domain" --projectId="$INFISICAL_PROJECT_ID" \
+                    --env="$INFISICAL_ENV" --path="$INFISICAL_PATH" \
+                    --plain --silent 2>/dev/null) || true
         fi
     fi
 
