@@ -23,8 +23,16 @@ INFISICAL_ENV="${INFISICAL_ENV:-prod}"
 INFISICAL_PATH="${INFISICAL_PATH:-/ml}"
 KEYCLOAK_URL="${KEYCLOAK_URL:-https://login.ai-charge.net}"
 KEYCLOAK_REALM="${KEYCLOAK_REALM:-AI-Charge-Technologies}"
-PUBLIC_URL="${DASHBOARD_PUBLIC_URL:-http://${HOST}:${PORT}}"
 SECRETS_FILE="$ROOT_DIR/.streamlit/secrets.toml"
+
+# Resolves a setting from the environment, else from Infisical via config.py.
+_cfg() {
+    local v="${!1:-}"
+    if [[ -z "$v" && -n "${INFISICAL_CLIENT_ID:-}" ]]; then
+        v=$(python "$ROOT_DIR/config.py" "$1" 2>/dev/null) || true
+    fi
+    printf '%s' "$v"
+}
 
 _activate() {
     # shellcheck source=/dev/null
@@ -46,34 +54,20 @@ _write_secrets() {
 
     local cid="${KEYCLOAK_CLIENT_ID:-}" csec="${KEYCLOAK_CLIENT_SECRET:-}"
 
-    if [[ -z "$cid" || -z "$csec" ]] && command -v infisical >/dev/null 2>&1 \
-       && [[ -n "${INFISICAL_CLIENT_ID:-}" && -n "${INFISICAL_CLIENT_SECRET:-}" ]]; then
+    if [[ -z "$cid" || -z "$csec" ]] && [[ -n "${INFISICAL_CLIENT_ID:-}" ]]; then
         echo "Reading Keycloak credentials from Infisical ($INFISICAL_PROJECT $INFISICAL_ENV:$INFISICAL_PATH) ..."
-        # --domain is needed on every subcommand, not just login: without it
-        # the CLI silently queries app.infisical.com instead of the self-hosted
-        # instance and fails with "invalid signature".
-        local domain="https://${INFISICAL_ENDPOINT}/api" tok
-        tok=$(infisical login --method=universal-auth \
-                --client-id="$INFISICAL_CLIENT_ID" \
-                --client-secret="$INFISICAL_CLIENT_SECRET" \
-                --domain="$domain" --plain --silent) || true
-        if [[ -n "$tok" ]]; then
-            cid=$(INFISICAL_TOKEN="$tok" infisical secrets get KEYCLOAK_CLIENT_ID \
-                    --domain="$domain" --projectId="$INFISICAL_PROJECT_ID" \
-                    --env="$INFISICAL_ENV" --path="$INFISICAL_PATH" \
-                    --plain --silent 2>/dev/null) || true
-            csec=$(INFISICAL_TOKEN="$tok" infisical secrets get KEYCLOAK_CLIENT_SECRET \
-                    --domain="$domain" --projectId="$INFISICAL_PROJECT_ID" \
-                    --env="$INFISICAL_ENV" --path="$INFISICAL_PATH" \
-                    --plain --silent 2>/dev/null) || true
-        fi
+        # config.py speaks to Infisical directly, so the host needs no CLI and
+        # the server and the dashboard resolve configuration the same way.
+        mapfile -t _kc < <(python "$ROOT_DIR/config.py" KEYCLOAK_CLIENT_ID KEYCLOAK_CLIENT_SECRET) || true
+        cid="${_kc[0]:-}"
+        csec="${_kc[1]:-}"
     fi
 
     if [[ -z "$cid" || -z "$csec" ]]; then
         echo "ERROR: no Keycloak credentials." >&2
         echo "  Set KEYCLOAK_CLIENT_ID / KEYCLOAK_CLIENT_SECRET, or provide" >&2
         echo "  INFISICAL_ENDPOINT / INFISICAL_CLIENT_ID / INFISICAL_CLIENT_SECRET" >&2
-        echo "  (INFISICAL_PROJECT_ID defaults to the citrineos project)." >&2
+        echo "  (INFISICAL_PROJECT_ID / _ENV / _PATH default to citrineos prod:/ml)." >&2
         echo "  For local development only: DASHBOARD_ALLOW_ANONYMOUS=1" >&2
         exit 1
     fi
@@ -115,6 +109,8 @@ cmd_start() {
         exit 1
     fi
     _activate
+    PUBLIC_URL="$(_cfg DASHBOARD_PUBLIC_URL)"
+    PUBLIC_URL="${PUBLIC_URL:-http://${HOST}:${PORT}}"
     _write_secrets
     echo "[$(date '+%F %T')] Starting dashboard on http://$HOST:$PORT (API: $SERVE_URL) ..." | tee -a "$LOG_FILE"
     nohup streamlit run "$ROOT_DIR/dashboard_app.py" \

@@ -263,7 +263,7 @@ SERVE_URL=http://127.0.0.1:8000 streamlit run dashboard_app.py --server.port 850
 | `DASHBOARD_STATION_ID` | *(none)* | Station pre-filled in the sidebar |
 | `DASHBOARD_EVSE_ID` | `1` | EVSE pre-filled in the sidebar |
 | `DASHBOARD_API_TOKEN` | *(none)* | Shared bearer token for `/api/dashboard` |
-| `DASHBOARD_PUBLIC_URL` | `http://$HOST:$PORT` | Base URL used for the OIDC redirect |
+| `DASHBOARD_PUBLIC_URL` | *(Infisical)* | Public base URL; the OIDC redirect is `<it>/oauth2callback` |
 | `KEYCLOAK_URL` | `https://login.ai-charge.net` | Keycloak base URL |
 | `KEYCLOAK_REALM` | `AI-Charge-Technologies` | Keycloak realm |
 | `KEYCLOAK_CLIENT_ID` / `_SECRET` | *(Infisical)* | OIDC client credentials |
@@ -324,6 +324,14 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env and fill in the values
 ```
+
+On the deployed host `.env` holds **only the Infisical machine identity**
+(`INFISICAL_ENDPOINT`, `INFISICAL_CLIENT_ID`, `INFISICAL_CLIENT_SECRET`).
+`config.load()` — called at startup by both `serve.py` and `dashboard_app.py` —
+pulls everything else from Infisical (`citrineos` project, `prod` environment,
+`/ml` folder) into the process environment.  Anything already set in the
+environment wins, so a local override still works, and with no Infisical
+identity present the fetch is skipped and plain `.env` is used.
 
 | Variable | Required | Description |
 |---|---|---|

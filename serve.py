@@ -94,15 +94,15 @@ import openmeteo_requests
 import pandas as pd
 import psycopg2
 import requests_cache
-from dotenv import load_dotenv
 from entsoe import EntsoePandasClient
 from fastapi import FastAPI, Header, HTTPException, Query
 from retry_requests import retry
 from stable_baselines3 import SAC
 
+import config
 import dashboard
 
-load_dotenv()
+config.load()
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 BATTERY_CAPACITY_KWH = 50.0
