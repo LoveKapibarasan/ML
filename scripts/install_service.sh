@@ -8,14 +8,15 @@ UNIT_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 
 # Resolve paths relative to this script — no hardcoded home dirs
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-VENV_UVICORN="$SCRIPT_DIR/.venv/bin/uvicorn"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+VENV_UVICORN="$PROJECT_DIR/.venv/bin/uvicorn"
 
 # When called via "sudo ./install_service.sh", $SUDO_USER is the real user.
 # Fallback: owner of the script directory via ls (portable across GNU/BusyBox).
 if [[ -n "${SUDO_USER:-}" ]]; then
     RUN_USER="$SUDO_USER"
 else
-    RUN_USER="$(ls -ld "$SCRIPT_DIR" | awk '{print $3}')"
+    RUN_USER="$(ls -ld "$PROJECT_DIR" | awk '{print $3}')"
 fi
 
 HOST="${SERVE_HOST:-0.0.0.0}"
@@ -49,7 +50,7 @@ After=network.target
 [Service]
 Type=simple
 User=${RUN_USER}
-WorkingDirectory=${SCRIPT_DIR}
+WorkingDirectory=${PROJECT_DIR}
 ExecStart=${VENV_UVICORN} serve:app --host ${HOST} --port ${PORT} --workers 1
 Restart=on-failure
 RestartSec=5
