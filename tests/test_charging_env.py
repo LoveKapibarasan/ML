@@ -39,7 +39,9 @@ def _demand_data(departure_time, target_soc=0.8, initial_soc=0.2):
 
 def _make_env(monkeypatch, full_data, demand_data):
     monkeypatch.setattr(
-        EVChargingEnv, "_load_data", lambda self, ev_id, input_dir: (full_data, demand_data)
+        EVChargingEnv,
+        "_load_data",
+        lambda self, ev_id, input_dir: (full_data, demand_data),
     )
     return EVChargingEnv()
 

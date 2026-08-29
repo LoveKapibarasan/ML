@@ -12,6 +12,9 @@ ruff
 gymnasium
 fastapi[standard]
 uvicorn[standard]
+streamlit[auth]
+altair
+requests
 psycopg2-binary
 pytest
 sphinx

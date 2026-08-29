@@ -25,11 +25,15 @@ citrine DB (OCPP 2.0.1)          ENTSO-E API          Open-Meteo API
                       │
                   serve.py  (FastAPI, port 8000)
                       │
-         GET /schedule?station_id=…&evse_id=…
-                      │
-         citrineos-payment  →  SetChargingProfile (OCPP)
-                      │
-              EV charger (CitrineOS)
+        ┌─────────────┴─────────────┐
+        │                           │
+GET /schedule?station_id=…   GET /api/dashboard?…
+        │                           │
+citrineos-payment                dashboard_app.py
+        │                        (Streamlit, port 8501)
+SetChargingProfile (OCPP)           │
+        │                      operator's browser
+  EV charger (CitrineOS)
 ```
 
 ---
@@ -170,7 +174,103 @@ GET /schedule
 
 GET /health
 → { "status": "healthy", "model": "<path>", "max_power_kw": <float> }
+
+GET /api/dashboard            Authorization: Bearer <DASHBOARD_API_TOKEN>
+  ?station_id=<str>            default DASHBOARD_STATION_ID (required)
+  &evse_id=<int>               default DASHBOARD_EVSE_ID
+  [&desired_soc=<float>]       default 0.8
+  [&departure_time=<ISO8601>]  default now+24h
+  [&current_soc=<float>]       default 0.2
+  [&history_hours=<int>]       default 24
+
+→ { "kpi": {…}, "forecast": [24 rows], "actuals": [N rows],
+    "sessions": […], "data_sources": {…}, "warnings": […] }
 ```
+
+`/api/dashboard` requires `DASHBOARD_API_TOKEN` as a bearer token — it returns
+the same operational data as the UI, so it is not left open on the public port.
+It **fails closed**: with no token configured on the server the endpoint returns
+503 rather than serving anonymously.  `/schedule` is deliberately *not* gated —
+citrineos-payment polls it unauthenticated.
+
+`/api/dashboard` runs the *same* `compute_schedule()` as `/schedule`, then adds
+the per-hour context that produced it (price, weather, SoC trajectory, which
+hours the SoC guarantee force-filled) and the measured history from the citrine
+DB.  The dashboard therefore cannot drift from the schedule the charger is
+actually given.
+
+---
+
+## Operations Dashboard (dashboard_app.py)
+
+A Streamlit app that runs as its own process and reads `/api/dashboard` over
+HTTP.  Measured history and forecast share one time axis:
+
+| Panel | Shows |
+|---|---|
+| Stat tiles | Current SoC, EVSE max power, price now, projected SoC at departure (target met / missed), planned cost vs always-on, measured cost |
+| Spot price | Day-ahead price for the whole window, stepped hourly, with negative-price hours tinted |
+| Charging power | Measured kW (past) vs planned kW (next 24 h), with SoC-guarantee force-fills marked |
+| State of charge | Projected trajectory against the target line and departure time |
+| Weather | Temperature and irradiance — the model's own inputs |
+| Tables | Recent sessions, and an hourly table view of every chart |
+
+The UI is available in **English, Japanese and German** (sidebar dropdown).  Chart colours
+are validated for colour-vision deficiency against both the light and dark
+Streamlit surfaces, and the series are distinguished by position and legend as
+well as hue.
+
+### Authentication
+
+The dashboard is gated by **Keycloak** — the `AI-Charge-Technologies` realm at
+`https://login.ai-charge.net`, the same one the operator tools use — through
+Streamlit's native OIDC support.
+
+`scripts/dashboard.sh` writes `.streamlit/secrets.toml` (git-ignored, mode 600)
+at startup, reading `KEYCLOAK_CLIENT_ID` / `KEYCLOAK_CLIENT_SECRET` from
+Infisical (`citrineos` project, `prod` environment, `/ml` folder) or from the
+environment.  No client
+secret is ever committed.
+
+It **fails closed**: with no provider configured the dashboard refuses to render.
+`DASHBOARD_ALLOW_ANONYMOUS=1` bypasses this **for local development only** and
+shows a persistent warning banner.
+
+> The Keycloak client must have the dashboard's
+> `<DASHBOARD_PUBLIC_URL>/oauth2callback` registered as a valid redirect URI, or
+> Keycloak answers `Invalid parameter: redirect_uri`.  This is a realm-admin
+> step, done once per deployment URL.
+
+```bash
+./scripts/dashboard.sh start    # start in background (PID in .dashboard.pid)
+./scripts/dashboard.sh stop
+./scripts/dashboard.sh restart
+./scripts/dashboard.sh status
+./scripts/dashboard.sh logs     # tail -f dashboard.log
+```
+
+Or directly:
+
+```bash
+SERVE_URL=http://127.0.0.1:8000 streamlit run dashboard_app.py --server.port 8501
+```
+
+| Variable | Default | Description |
+|---|---|---|
+| `SERVE_URL` | `http://127.0.0.1:8000` | Inference server the dashboard reads |
+| `DASHBOARD_HOST` | `0.0.0.0` | Bind address |
+| `DASHBOARD_PORT` | `8501` | Dashboard port |
+| `DASHBOARD_STATION_ID` | *(none)* | Station pre-filled in the sidebar |
+| `DASHBOARD_EVSE_ID` | `1` | EVSE pre-filled in the sidebar |
+| `DASHBOARD_API_TOKEN` | *(none)* | Shared bearer token for `/api/dashboard` |
+| `DASHBOARD_PUBLIC_URL` | *(Infisical)* | Public base URL; the OIDC redirect is `<it>/oauth2callback` |
+| `KEYCLOAK_URL` | `https://login.ai-charge.net` | Keycloak base URL |
+| `KEYCLOAK_REALM` | `AI-Charge-Technologies` | Keycloak realm |
+| `KEYCLOAK_CLIENT_ID` / `_SECRET` | *(Infisical)* | OIDC client credentials |
+| `DASHBOARD_ALLOW_ANONYMOUS` | *(unset)* | `1` disables auth — local development only |
+
+If the citrine DB is unreachable the dashboard still renders: the measured
+panels come back empty with a warning banner, and the forecast is unaffected.
 
 ---
 
@@ -192,12 +292,16 @@ ML/
 ├── benchmark_results/       # Benchmark plots and summary CSV — git-ignored
 ├── sac_ev_logs/             # TensorBoard training logs — git-ignored
 ├── train.py                 # SAC training entry point
-├── test.py                  # Quick backtest + price-vs-SoC chart
+├── scripts/backtest.py      # Quick backtest + price-vs-SoC chart
 ├── benchmark.py             # Full benchmark: SAC vs 3 baseline strategies
 ├── serve.py                 # FastAPI inference server (SMARTCHARGING_ENDPOINT)
-├── run_pipeline.sh          # One-shot: fetch data → preprocess → train
-├── serve.sh                 # Service manager (start/stop/restart/status/logs)
-├── install_service.sh       # Register serve.py as a systemd service
+├── dashboard.py             # Dashboard data layer: citrine history + payload
+├── dashboard_app.py         # Streamlit operations dashboard (port 8501)
+├── assets/                  # Brand favicon (PNG / ICO) used by the dashboard
+├── scripts/run_pipeline.sh  # One-shot: fetch data → preprocess → train
+├── scripts/serve.sh         # Service manager (start/stop/restart/status/logs)
+├── scripts/dashboard.sh     # Dashboard service manager
+├── deploy/                  # systemd units + installer (git-tracked config)
 ├── .env                     # Secrets — git-ignored
 └── .env.example             # Template — commit this, not .env
 ```
@@ -221,6 +325,14 @@ cp .env.example .env
 # Edit .env and fill in the values
 ```
 
+On the deployed host `.env` holds **only the Infisical machine identity**
+(`INFISICAL_ENDPOINT`, `INFISICAL_CLIENT_ID`, `INFISICAL_CLIENT_SECRET`).
+`config.load()` — called at startup by both `serve.py` and `dashboard_app.py` —
+pulls everything else from Infisical (`citrineos` project, `prod` environment,
+`/ml` folder) into the process environment.  Anything already set in the
+environment wins, so a local override still works, and with no Infisical
+identity present the fetch is skipped and plain `.env` is used.
+
 | Variable | Required | Description |
 |---|---|---|
 | `DB_HOST` | yes | citrine PostgreSQL host |
@@ -234,6 +346,13 @@ cp .env.example .env
 | `WEATHER_LON` | no | Site longitude (default `13.41` Berlin) |
 | `SERVE_PORT` | no | Inference server port (default `8000`) |
 | `MODEL_PATH` | no | Override model path (default `models/best_model`) |
+| `SERVE_URL` | no | Inference server the dashboard reads (default `http://127.0.0.1:8000`) |
+| `DASHBOARD_PORT` | no | Dashboard port (default `8501`) |
+| `DASHBOARD_STATION_ID` | no | Station pre-filled in the dashboard |
+| `DASHBOARD_EVSE_ID` | no | EVSE pre-filled in the dashboard (default `1`) |
+| `DASHBOARD_API_TOKEN` | **yes** | Bearer token gating `/api/dashboard` |
+| `KEYCLOAK_CLIENT_ID` | **yes** | OIDC client for the dashboard (or via Infisical) |
+| `KEYCLOAK_CLIENT_SECRET` | **yes** | OIDC client secret (or via Infisical) |
 
 ---
 
@@ -242,7 +361,7 @@ cp .env.example .env
 ### Option A — One-shot script
 
 ```bash
-./run_pipeline.sh
+./scripts/run_pipeline.sh
 # Fetches all data, preprocesses, and trains in sequence.
 ```
 
@@ -308,28 +427,44 @@ python benchmark.py
 **Option A – foreground / manual**
 
 ```bash
-./serve.sh start    # start in background (PID saved to .serve.pid)
-./serve.sh stop     # graceful stop
-./serve.sh restart  # stop + start
-./serve.sh status   # show PID and URL
-./serve.sh logs     # tail -f serve.log
+./scripts/serve.sh start    # start in background (PID saved to .serve.pid)
+./scripts/serve.sh stop     # graceful stop
+./scripts/serve.sh restart  # stop + start
+./scripts/serve.sh status   # show PID and URL
+./scripts/serve.sh logs     # tail -f serve.log
 ```
 
-**Option B – systemd service (auto-start on boot)**
+**Option B – systemd services (auto-start on boot)**
+
+Both the API and the dashboard run as services; the units live in
+[`deploy/`](deploy/) so the deployed configuration is in git.
 
 ```bash
-sudo ./install_service.sh
-# Generates /etc/systemd/system/sac-charging.service from the current directory,
-# enables it, and starts it immediately.
+sudo ./deploy/install.sh
+# Fills the paths and ports into deploy/*.service, installs them to
+# /etc/systemd/system, enables both, and starts them.
 
-systemctl status  sac-charging
-systemctl stop    sac-charging
-systemctl restart sac-charging
+systemctl status  sac-charging sac-dashboard
+systemctl restart sac-dashboard
 journalctl -u     sac-charging -f   # live logs
+sudo ./deploy/uninstall.sh          # stop, disable and remove
 ```
+
+See [`deploy/README.md`](deploy/README.md) for the details.
 
 Then set `SMARTCHARGING_ENDPOINT=http://<this-host>:8000/schedule` in
 `citrineos-payment`'s `.env`.
+
+#### 7. Start the operations dashboard
+
+```bash
+./scripts/dashboard.sh start
+# → http://<this-host>:8501
+```
+
+It reads the inference server started in step 6, so start that first.  On a
+deployed host use `sudo ./deploy/install.sh` instead, which runs both as
+systemd services.
 
 ---
 
@@ -365,6 +500,8 @@ schedule alone would fall short.
 
 - **Battery capacity**: 50 kWh — configurable in `EVChargingEnv`.
 
-- **Station**: `cp001` (EVerest / CitrineOS OCPP 2.0.1 charger).
+- **Stations**: the station IDs live in the citrine DB (`Transactions.stationId`);
+  set the one you want pre-filled via `DASHBOARD_STATION_ID`.  There is no
+  built-in default — an empty `station_id` returns 422 rather than an empty page.
 
 - **Training time**: ~3 h for 500 k steps on RTX 3050.

@@ -7,6 +7,8 @@ API Reference
 
    envs.charging_env
    serve
+   dashboard
+   dashboard_app
    train
    data.preprocess
    data.ev_from_db

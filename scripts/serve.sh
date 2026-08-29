@@ -4,15 +4,16 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PID_FILE="$SCRIPT_DIR/.serve.pid"
-LOG_FILE="$SCRIPT_DIR/serve.log"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PID_FILE="$PROJECT_DIR/.serve.pid"
+LOG_FILE="$PROJECT_DIR/serve.log"
 
 HOST="${SERVE_HOST:-0.0.0.0}"
 PORT="${SERVE_PORT:-8000}"
 
 _activate() {
     # shellcheck source=/dev/null
-    source "$SCRIPT_DIR/.venv/bin/activate"
+    source "$PROJECT_DIR/.venv/bin/activate"
 }
 
 _is_running() {
@@ -32,6 +33,7 @@ cmd_start() {
     fi
     _activate
     echo "[$(date '+%F %T')] Starting SAC inference server on http://$HOST:$PORT ..." | tee -a "$LOG_FILE"
+    cd "$PROJECT_DIR"
     nohup uvicorn serve:app \
         --host "$HOST" \
         --port "$PORT" \

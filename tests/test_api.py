@@ -1,45 +1,15 @@
 from datetime import datetime, timedelta, timezone
 
-import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
 import serve
 
 
-class FakeModel:
-    def predict(self, _obs, deterministic=True):
-        return [0.5], None
-
-
 @pytest.fixture(autouse=True)
-def patch_runtime_dependencies(monkeypatch):
-    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
-    price_index = pd.date_range(
-        start=now.replace(tzinfo=None),
-        periods=serve.SCHEDULE_HOURS + 4,
-        freq="h",
-    )
-    prices = pd.DataFrame(
-        {
-            "price": [0.30] * len(price_index),
-            "price_3h_future": [0.30] * len(price_index),
-        },
-        index=price_index,
-    )
-    weather = pd.DataFrame(
-        {
-            "temp_c": [18.0] * len(price_index),
-            "radiation_wm2": [100.0] * len(price_index),
-            "sunshine_duration_s": [600.0] * len(price_index),
-        },
-        index=price_index,
-    )
-
-    monkeypatch.setattr(serve, "model", FakeModel())
-    monkeypatch.setattr(serve, "_load_prices", lambda: prices)
-    monkeypatch.setattr(serve, "_fetch_weather", lambda: weather)
-    monkeypatch.setattr(serve, "_get_evse_max_power_kw", lambda *_args: 11.0)
+def _patched(patch_runtime_dependencies):
+    """Applies the shared runtime patches (see ``tests/conftest.py``)."""
+    return patch_runtime_dependencies
 
 
 def test_health_returns_model_and_status():
@@ -107,3 +77,37 @@ def test_schedule_returns_503_when_price_data_is_missing(monkeypatch):
 
     assert response.status_code == 503
     assert "No spot price file" in response.json()["detail"]
+
+
+def test_importing_serve_does_not_require_a_checkpoint(monkeypatch):
+    """CI has no models/ — importing must not be the thing that loads it."""
+    import serve as serve_module
+
+    monkeypatch.setattr(serve_module, "_model_path", None)
+    monkeypatch.setattr(serve_module, "model", None)
+
+    def no_checkpoint():
+        raise FileNotFoundError("No trained model found")
+
+    monkeypatch.setattr(serve_module, "_find_model", no_checkpoint)
+
+    # Reporting is tolerant …
+    assert serve_module.model_path() == "not found"
+    assert TestClient(serve_module.app).get("/health").status_code == 200
+    # … but actually serving is not.
+    with pytest.raises(FileNotFoundError):
+        serve_module.get_model()
+
+
+def test_get_model_returns_an_already_assigned_policy(monkeypatch):
+    sentinel = object()
+    import serve as serve_module
+
+    monkeypatch.setattr(serve_module, "model", sentinel)
+
+    def explode():
+        raise AssertionError("must not reload when a policy is already set")
+
+    monkeypatch.setattr(serve_module, "_find_model", explode)
+
+    assert serve_module.get_model() is sentinel
