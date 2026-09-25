@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Publish the trained SAC model to a Gitea release.
-# Required env: GITEA_TOKEN
+# Token resolution order:
+#   1) $GITEA_TOKEN if set
+#   2) the token embedded in the git remote URL (set at clone time)
 # Optional env: GITEA_API, GITEA_REPO, MODEL_DIR, RELEASE_TAG
 # Only publishes when training has finished (models/sac_smart_charger_final.zip exists).
 set -euo pipefail
@@ -9,7 +11,12 @@ GITEA_API="${GITEA_API:-https://gitea.ai-charge.net/api/v1}"
 GITEA_REPO="${GITEA_REPO:-AI-ChargeTechnologies/ML}"
 MODEL_DIR="${MODEL_DIR:-models}"
 RELEASE_TAG="${RELEASE_TAG:-sac-model-$(date +%Y%m%d-%H%M)}"
-: "${GITEA_TOKEN:?GITEA_TOKEN required}"
+
+# Fall back to the token embedded in the git remote (no secret needs to be stored elsewhere).
+if [[ -z "${GITEA_TOKEN:-}" ]]; then
+  GITEA_TOKEN="$(git config --get remote.origin.url 2>/dev/null | sed -nE 's#https?://[^:]*:([^@]+)@.*#\1#p' || true)"
+fi
+: "${GITEA_TOKEN:?GITEA_TOKEN not set and not found in git remote URL}"
 
 FINAL="$MODEL_DIR/sac_smart_charger_final.zip"
 BEST="$MODEL_DIR/best_model.zip"
